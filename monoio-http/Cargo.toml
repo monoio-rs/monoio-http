@@ -1,0 +1,17 @@
+[package]
+authors = ["ChiHai <ihciah@gmail.com>"]
+description = "Low level http implementation for Monoio."
+edition = "2021"
+keywords = ["monoio", "http", "async"]
+license = "MIT/Apache-2.0"
+name = "monoio-http"
+version = "0.0.1"
+
+[dependencies]
+monoio = {version = "0.0.7", path = "../../monoio/monoio"}
+monoio-codec = {version = "0.0.2", path = "../../monoio-codec"}
+
+bytes = "1"
+http = "0.2"
+httparse = "1"
+thiserror = "1"
