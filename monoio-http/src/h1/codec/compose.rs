@@ -18,6 +18,16 @@ where
     Streamed(SDE, StreamPayloadSender<BI, SDE::Error>),
 }
 
+impl<FDE, SDE, BI> Default for NextDecoder<FDE, SDE, BI>
+where
+    FDE: Decoder<Item = BI>,
+    SDE: Decoder<Item = Option<BI>>,
+{
+    fn default() -> Self {
+        NextDecoder::None
+    }
+}
+
 /// ComposeDecoder is a wrapper of 3 codecs(Main decoder, fixed decoder
 /// and streamed decoder).
 /// It will first use the main codec. If the decoded result suggests that
@@ -117,6 +127,17 @@ where
             decoder,
             next_decoder: NextDecoder::None,
         }
+    }
+}
+
+impl<DE, I, FDE, SDE, BI> Default for ComposeDecoder<DE, I, FDE, SDE, BI>
+where
+    DE: Decoder<Item = (I, NextDecoder<FDE, SDE, BI>)> + Default,
+    FDE: Decoder<Item = BI>,
+    SDE: Decoder<Item = Option<BI>>,
+{
+    fn default() -> Self {
+        Self::new(Default::default())
     }
 }
 

@@ -1,8 +1,5 @@
-use monoio_codec::Decoder;
-
-mod encoder;
-mod decoder;
 mod compose;
+mod decoder;
+mod encoder;
 
 struct Codec {}
-

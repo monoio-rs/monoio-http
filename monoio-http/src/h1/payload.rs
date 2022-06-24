@@ -1,5 +1,4 @@
 /// General payload representation.
-
 use std::{
     cell::UnsafeCell,
     collections::VecDeque,
