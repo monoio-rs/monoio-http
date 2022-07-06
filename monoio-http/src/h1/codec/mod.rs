@@ -1,5 +1,3 @@
-mod compose;
-mod decoder;
-mod encoder;
-
-struct Codec {}
+pub mod compose;
+pub mod decoder;
+pub mod encoder;

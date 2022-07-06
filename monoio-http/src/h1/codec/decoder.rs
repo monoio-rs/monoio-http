@@ -1,4 +1,4 @@
-use std::{io, marker::PhantomData};
+use std::{borrow::Cow, io, marker::PhantomData};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -10,8 +10,8 @@ use thiserror::Error as ThisError;
 
 use crate::{
     h1::payload::{fixed_payload_pair, stream_payload_pair, Payload},
-    request::{Request, RequestHead},
-    response::{Response, ResponseHead},
+    common::request::{Request, RequestHead},
+    common::response::{Response, ResponseHead},
     ParamRef,
 };
 
@@ -49,7 +49,7 @@ const EMPTY_HEADER_INDEX: HeaderIndex = HeaderIndex {
 
 /// Decoder of http1 request header.
 #[derive(Default)]
-pub(crate) struct RequestHeaderDecoder;
+pub struct RequestHeaderDecoder;
 
 impl Decoder for RequestHeaderDecoder {
     type Item = RequestHead;
@@ -109,7 +109,7 @@ impl Decoder for RequestHeaderDecoder {
 // TODO: less code copy
 /// Decoder of http1 response header.
 #[derive(Default)]
-pub(crate) struct ResponseHeaderDecoder;
+pub struct ResponseHeaderDecoder;
 
 impl Decoder for ResponseHeaderDecoder {
     type Item = ResponseHead;
@@ -117,7 +117,7 @@ impl Decoder for ResponseHeaderDecoder {
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let mut header_indices = [EMPTY_HEADER_INDEX; MAX_HEADERS];
-        let (data_len, header_len, version, status) = {
+        let (data_len, header_len, version, status, reason) = {
             let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut res = httparse::Response::new(&mut headers);
             let base_ptr = src.as_ptr() as usize;
@@ -140,8 +140,9 @@ impl Decoder for ResponseHeaderDecoder {
                 Version::HTTP_10
             };
             let status = StatusCode::from_u16(res.code.unwrap())?;
+            let reason = res.reason.map(|r| Cow::Owned(r.to_owned()));
 
-            (l, res.headers.len(), version, status)
+            (l, res.headers.len(), version, status, reason)
         };
 
         let data = src.split_to(data_len).freeze();
@@ -157,6 +158,7 @@ impl Decoder for ResponseHeaderDecoder {
         let response_head = ResponseHead {
             version,
             status,
+            reason,
             headers,
         };
 
@@ -165,12 +167,13 @@ impl Decoder for ResponseHeaderDecoder {
 }
 
 /// Decoder of http1 body with fixed length.
-pub(crate) struct FixedBodyDecoder(usize);
+pub struct FixedBodyDecoder(usize);
 
 impl Decoder for FixedBodyDecoder {
     type Item = Bytes;
     type Error = DecodeError;
 
+    #[inline]
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.len() < self.0 {
             return Ok(None);
@@ -183,7 +186,7 @@ impl Decoder for FixedBodyDecoder {
 // TODO: support trailer
 /// Decoder of http1 chunked body.
 #[derive(Default)]
-pub(crate) struct ChunkedBodyDecoder(Option<usize>);
+pub struct ChunkedBodyDecoder(Option<usize>);
 
 impl Decoder for ChunkedBodyDecoder {
     type Item = Option<Bytes>;
@@ -261,13 +264,13 @@ impl Decoder for ChunkedBodyDecoder {
 /// A wrapper around D(normally RequestHeaderDecoder and ResponseHeaderDecoder).
 /// Mainly for extract special headers and return the raw item and payload to
 /// satisfy the constraint of `ComposeDecoder`.
-pub(crate) struct ComposedHeaderDecoder<R, D> {
+pub struct ComposedHeaderDecoder<R, D> {
     decoder: D,
     _marker: PhantomData<R>,
 }
 
 impl<R, D> ComposedHeaderDecoder<R, D> {
-    pub(crate) fn new(decoder: D) -> Self {
+    pub fn new(decoder: D) -> Self {
         Self {
             decoder,
             _marker: PhantomData,
@@ -335,7 +338,7 @@ where
     }
 }
 
-pub(crate) type RequestDecoder = ComposeDecoder<
+pub type RequestDecoder = ComposeDecoder<
     ComposedHeaderDecoder<Request<Payload<Bytes, DecodeError>>, RequestHeaderDecoder>,
     Request<Payload<Bytes, DecodeError>>,
     FixedBodyDecoder,
@@ -343,7 +346,7 @@ pub(crate) type RequestDecoder = ComposeDecoder<
     Bytes,
 >;
 
-pub(crate) type ResponseDecoder = ComposeDecoder<
+pub type ResponseDecoder = ComposeDecoder<
     ComposedHeaderDecoder<Response<Payload<Bytes, DecodeError>>, ResponseHeaderDecoder>,
     Response<Payload<Bytes, DecodeError>>,
     FixedBodyDecoder,
@@ -451,7 +454,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_fixed_body_response() {
         let mut data = BytesMut::from(
-            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody",
+            "HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody",
         );
         let mut decoder = ResponseDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
@@ -482,6 +485,11 @@ mod tests {
             Payload::Stream(p) => p,
             _ => panic!("wrong payload type"),
         };
+        // Here we use spawn to read the body because calling next will not do real io.
+        // We must do decode to push the streaming body.
+        // There are two choices: spawn or select.
+        // Use spawn is easy for testing. However, for better performance, use select
+        // in hot path.
         let handler = monoio::spawn(async move {
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"data");
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"line");
@@ -494,7 +502,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_chunked_response() {
         let mut data = BytesMut::from(
-            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\
+            "HTTP/1.1 200 OK\r\nTransfer-encoDing: chunked\r\n\r\n\
             4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n",
         );
         let mut decoder = ResponseDecoder::default();

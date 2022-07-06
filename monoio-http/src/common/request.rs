@@ -2,6 +2,8 @@ use http::{HeaderMap, Method, Uri, Version};
 
 use crate::ParamRef;
 
+use super::ReqOrResp;
+
 #[derive(Debug, Clone)]
 pub struct RequestHead {
     pub method: Method,
@@ -10,10 +12,7 @@ pub struct RequestHead {
     pub headers: HeaderMap,
 }
 
-pub struct Request<P> {
-    pub head: RequestHead,
-    pub payload: P,
-}
+pub type Request<P> = ReqOrResp<RequestHead, P>;
 
 impl<P> From<(RequestHead, P)> for Request<P> {
     fn from(inner: (RequestHead, P)) -> Self {

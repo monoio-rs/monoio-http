@@ -1,18 +1,20 @@
+use std::borrow::Cow;
+
 use http::{HeaderMap, StatusCode, Version};
 
 use crate::ParamRef;
+
+use super::ReqOrResp;
 
 #[derive(Debug, Clone)]
 pub struct ResponseHead {
     pub version: Version,
     pub status: StatusCode,
+    pub reason: Option<Cow<'static, str>>,
     pub headers: HeaderMap,
 }
 
-pub struct Response<P> {
-    pub head: ResponseHead,
-    pub payload: P,
-}
+pub type Response<P> = ReqOrResp<ResponseHead, P>;
 
 impl<P> From<(ResponseHead, P)> for Response<P> {
     fn from(inner: (ResponseHead, P)) -> Self {
