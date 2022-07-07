@@ -1,6 +1,6 @@
 use http::{HeaderMap, Method, Uri, Version};
 
-use crate::ParamRef;
+use crate::{ParamMut, ParamRef};
 
 use super::ReqOrResp;
 
@@ -26,5 +26,11 @@ impl<P> From<(RequestHead, P)> for Request<P> {
 impl ParamRef<HeaderMap> for RequestHead {
     fn param_ref(&self) -> &HeaderMap {
         &self.headers
+    }
+}
+
+impl ParamMut<HeaderMap> for RequestHead {
+    fn param_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
     }
 }

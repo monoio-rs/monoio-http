@@ -95,6 +95,15 @@ impl<D, E> FixedInner<D, E> {
 }
 
 impl<D, E> FixedPayload<D, E> {
+    pub fn new(data: D) -> Self {
+        Self {
+            inner: Rc::new(UnsafeCell::new(FixedInner {
+                item: Some(Ok(data)),
+                task: None,
+            })),
+        }
+    }
+
     pub async fn get(self) -> Result<D, E> {
         loop {
             let inner = unsafe { &mut *self.inner.get() };

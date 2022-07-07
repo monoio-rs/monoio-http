@@ -5,5 +5,9 @@ pub trait ParamRef<T> {
     fn param_ref(&self) -> &T;
 }
 
-pub mod h1;
+pub trait ParamMut<T> {
+    fn param_mut(&mut self) -> &mut T;
+}
+
 pub mod common;
+pub mod h1;

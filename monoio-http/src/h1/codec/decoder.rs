@@ -9,9 +9,9 @@ use monoio_codec::Decoder;
 use thiserror::Error as ThisError;
 
 use crate::{
-    h1::payload::{fixed_payload_pair, stream_payload_pair, Payload},
     common::request::{Request, RequestHead},
     common::response::{Response, ResponseHead},
+    h1::payload::{fixed_payload_pair, stream_payload_pair, Payload},
     ParamRef,
 };
 

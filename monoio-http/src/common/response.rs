@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use http::{HeaderMap, StatusCode, Version};
 
-use crate::ParamRef;
+use crate::{ParamMut, ParamRef};
 
 use super::ReqOrResp;
 
@@ -28,5 +28,11 @@ impl<P> From<(ResponseHead, P)> for Response<P> {
 impl ParamRef<HeaderMap> for ResponseHead {
     fn param_ref(&self) -> &HeaderMap {
         &self.headers
+    }
+}
+
+impl ParamMut<HeaderMap> for ResponseHead {
+    fn param_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
     }
 }

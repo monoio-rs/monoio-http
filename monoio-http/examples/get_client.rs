@@ -1,3 +1,6 @@
+//! Simple HTTP Get example with low level codec.
+//! We use captive.apple.com as target service.
+
 use std::io;
 
 use bytes::Bytes;
