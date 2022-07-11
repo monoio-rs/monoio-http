@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, Method, Version};
+use http::{HeaderMap, Method, Version};
 use monoio::io::{sink::Sink, stream::Stream};
 use monoio_codec::FramedRead;
 use monoio_http::{
@@ -21,9 +21,11 @@ use monoio_http::{
 };
 use serde::Deserialize;
 
+const TEST_DATA: &str = r#"{"key": "val"}"#;
+
 #[monoio::main]
 async fn main() {
-    let payload: Bytes = r#"{"key": "val"}"#.into();
+    let payload: Bytes = TEST_DATA.into();
     let mut headers = HeaderMap::new();
     headers.insert(http::header::HOST, "httpbin.org".parse().unwrap());
     headers.insert(http::header::ACCEPT, "*/*".parse().unwrap());
@@ -31,11 +33,6 @@ async fn main() {
     headers.insert(
         http::header::CONTENT_TYPE,
         "application/json".parse().unwrap(),
-    );
-    // TODO: Content-Length injection should be done in `send`.
-    headers.insert(
-        http::header::CONTENT_LENGTH,
-        HeaderValue::from_str(&format!("{}", payload.len())).unwrap(),
     );
     let request = Request {
         head: RequestHead {
@@ -90,7 +87,7 @@ async fn process_payload(payload: FixedPayload<Bytes, DecodeError>) {
     let data = payload.get().await.expect("unable to read response body");
     let resp: HttpbinResponse = serde_json::from_slice(&data).expect("unable to parse json body");
     println!("Response json: {resp:?}");
-    assert_eq!(resp.data.len(), 14); // {"key": "val"}
+    assert_eq!(resp.data, TEST_DATA);
     assert_eq!(
         resp.headers.get("User-Agent").expect("header not exist"),
         "monoio-http"

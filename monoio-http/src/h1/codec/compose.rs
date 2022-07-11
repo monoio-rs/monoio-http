@@ -40,7 +40,11 @@ where
 /// Main codec Item should be (Item, NextDecoder<FDE, SDE, BI>).
 /// And the last but least, the decode or next is the only reader of the
 /// io, if you do not call framed.next, the payload.next will be blocked.
-/// Use macro select instead of loop receive and send.
+/// Basically there are two ways:
+/// 1. Manually create and poll future(like with select!). Make sure you
+/// poll the future till the Ready.
+/// 2. Spawn the framed.next task and use channel. Then you can select!
+/// rx.recv() and request handler.
 pub struct ComposeDecoder<DE, I, FDE, SDE, BI>
 where
     DE: Decoder<Item = (I, NextDecoder<FDE, SDE, BI>)>,

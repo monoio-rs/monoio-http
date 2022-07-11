@@ -1,10 +1,10 @@
-use std::{io, pin::Pin};
+use std::io;
 
 use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, StatusCode, Version};
+use http::{HeaderMap, StatusCode, Version};
 use monoio::{
     io::{sink::Sink, stream::Stream},
-    net::{TcpListener, TcpStream},
+    net::{tcp::TcpOwnedWriteHalf, TcpListener, TcpStream},
 };
 use monoio_codec::FramedRead;
 use monoio_http::{
@@ -19,6 +19,7 @@ use monoio_http::{
         },
         payload::{FixedPayload, Payload},
     },
+    util::spsc::{spsc_pair, SPSCReceiver},
 };
 
 #[monoio::main]
@@ -41,34 +42,78 @@ async fn main() {
 
 async fn handle_connection(stream: TcpStream) {
     let (r, w) = stream.into_split();
-    let mut sender = ReqOrRespEncoder::new(w);
+    let sender = ReqOrRespEncoder::new(w);
     let mut receiver = FramedRead::new(r, RequestDecoder::default());
+    let (mut tx, rx) = spsc_pair();
+    monoio::spawn(handle_task(rx, sender));
 
-    let mut task_slot = None;
     loop {
-        if task_slot.is_none() {
-            match receiver.next().await {
-                None => return,
-                Some(Ok(req)) => task_slot = Some(handle_request(req)),
-                Some(Err(e)) => println!("Parse request failed! {}", e),
+        match receiver.next().await {
+            None => {
+                println!("connection closed, connection handler exit");
+                return;
             }
-        }
-        let mut pinned = unsafe { Pin::new_unchecked(task_slot.as_mut().unwrap()) };
-        monoio::select! {
-            req = receiver.next() => {
-                match req {
-                    None => return,
-                    Some(Ok(req)) => task_slot = Some(handle_request(req)),
-                    Some(Err(e)) => println!("Parse request failed! {}", e),
-                }
-            },
-            resp = &mut pinned => {
-                task_slot = None;
-                if let Err(e) = sender.send(resp).await {
-                    println!("Send response failed! {}", e);
+            Some(Err(_)) => {
+                println!("receive request failed, connection handler exit");
+                return;
+            }
+            Some(Ok(item)) => match tx.send(item).await {
+                Err(_) => {
+                    println!("request handler dropped, connection handler exit");
                     return;
                 }
+                Ok(_) => {
+                    println!("request handled success");
+                }
             },
+        }
+    }
+
+    // let mut task_slot = None;
+    // loop {
+    //     if task_slot.is_none() {
+    //         match receiver.next().await {
+    //             None => return,
+    //             Some(Ok(req)) => task_slot = Some(handle_request(req)),
+    //             Some(Err(e)) => println!("Parse request failed! {}", e),
+    //         }
+    //     }
+    //     let mut pinned = unsafe { Pin::new_unchecked(task_slot.as_mut().unwrap()) };
+    //     monoio::select! {
+    //         req = receiver.next() => {
+    //             match req {
+    //                 None => return,
+    //                 Some(Ok(req)) => task_slot = Some(handle_request(req)),
+    //                 Some(Err(e)) => println!("Parse request failed! {}", e),
+    //             }
+    //         },
+    //         resp = &mut pinned => {
+    //             task_slot = None;
+    //             if let Err(e) = sender.send(resp).await {
+    //                 println!("Send response failed! {}", e);
+    //                 return;
+    //             }
+    //         },
+    //     }
+    // }
+}
+
+async fn handle_task(
+    mut receiver: SPSCReceiver<Request<Payload<Bytes, DecodeError>>>,
+    mut sender: ReqOrRespEncoder<TcpOwnedWriteHalf>,
+) {
+    loop {
+        let request = match receiver.recv().await {
+            Some(r) => r,
+            None => {
+                println!("channel closed, handle task exit");
+                return;
+            }
+        };
+        let resp = handle_request(request).await;
+        if let Err(e) = sender.send(resp).await {
+            println!("send failed: {e:?}, handle task exit");
+            return;
         }
     }
 }
@@ -84,10 +129,6 @@ async fn handle_request(
         Payload::None => Payload::None,
         Payload::Fixed(p) => match p.get().await {
             Ok(data) => {
-                headers.insert(
-                    http::header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&format!("{}", data.len())).unwrap(),
-                );
                 has_payload = true;
                 Payload::Fixed(FixedPayload::new(data))
             }

@@ -1,7 +1,7 @@
 use std::{fmt::Write, future::Future, io};
 
 use bytes::{Buf, Bytes, BytesMut};
-use http::Version;
+use http::{HeaderMap, HeaderValue, Version};
 use monoio::{
     buf::RawBuf,
     io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt},
@@ -12,11 +12,29 @@ use crate::{
     common::request::RequestHead,
     common::{response::ResponseHead, ReqOrResp},
     h1::payload::Payload,
+    ParamMut,
 };
 
 const AVERAGE_HEADER_SIZE: usize = 30;
 
 struct HeadEncoder;
+
+impl HeadEncoder {
+    fn set_length_header(header_map: &mut HeaderMap, length: Length) {
+        match length {
+            Length::None => (),
+            Length::ContentLength(l) => {
+                header_map.insert(http::header::CONTENT_LENGTH, l.into());
+            }
+            Length::Chunked => {
+                header_map.insert(
+                    http::header::TRANSFER_ENCODING,
+                    HeaderValue::from_static("chunked"),
+                );
+            }
+        }
+    }
+}
 
 impl Encoder<RequestHead> for HeadEncoder {
     type Error = io::Error;
@@ -179,10 +197,17 @@ impl<T> ReqOrRespEncoder<T> {
     }
 }
 
+enum Length {
+    None,
+    ContentLength(usize),
+    Chunked,
+}
+
 impl<T, H> Sink<ReqOrResp<H, Payload<Bytes, io::Error>>> for ReqOrRespEncoder<T>
 where
     T: AsyncWriteRent,
     HeadEncoder: Encoder<H, Error = io::Error>,
+    H: ParamMut<HeaderMap>,
 {
     type Error = io::Error;
 
@@ -192,27 +217,37 @@ where
 
     type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
 
-    fn send(&mut self, item: ReqOrResp<H, Payload<Bytes, io::Error>>) -> Self::SendFuture<'_> {
+    fn send(&mut self, mut item: ReqOrResp<H, Payload<Bytes, io::Error>>) -> Self::SendFuture<'_> {
         async move {
-            // if there is too many content in buffer, flush it first
+            // if there is too much content in buffer, flush it first
             if self.buf.len() > BACKPRESSURE_BOUNDARY {
                 self.flush().await?;
             }
-            // encode head to buffer
-            HeadEncoder.encode(item.head, &mut self.buf)?;
+            let header_map = item.head.param_mut();
             match item.payload {
-                // if there is no payload, flush it now and return.
                 Payload::None => {
+                    // set special header
+                    HeadEncoder::set_length_header(header_map, Length::None);
+                    // encode head to buffer
+                    HeadEncoder.encode(item.head, &mut self.buf)?;
+                    // if there is no payload, flush it now and return.
                     self.flush().await?;
                 }
                 Payload::Fixed(p) => {
+                    // get data(to set content length and body)
                     let data = p.get().await?;
+                    // set special header
+                    HeadEncoder::set_length_header(header_map, Length::ContentLength(data.len()));
+                    // encode head to buffer
+                    HeadEncoder.encode(item.head, &mut self.buf)?;
+                    // flush
                     if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
                         // if data to send is too long, we will flush the buffer
                         // first, and send Bytes directly.
                         self.flush().await?;
                         let (r, _) = self.io.write_all(data).await;
                         r?;
+                        self.io.flush().await?;
                     } else {
                         // the data length is small, we copy it to avoid too many
                         // syscall(head and body will be sent together).
@@ -221,6 +256,11 @@ where
                     }
                 }
                 Payload::Stream(mut p) => {
+                    // set special header
+                    HeadEncoder::set_length_header(header_map, Length::Chunked);
+                    // encode head to buffer
+                    HeadEncoder.encode(item.head, &mut self.buf)?;
+
                     while let Some(data_result) = p.next().await {
                         let data = data_result?;
                         if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
@@ -242,6 +282,7 @@ where
                     }
                 }
             }
+
             Ok(())
         }
     }
