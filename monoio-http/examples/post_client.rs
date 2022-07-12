@@ -13,6 +13,7 @@ use monoio_http::{
     common::request::{Request, RequestHead},
     h1::{
         codec::{
+            compose::DecodeItem,
             decoder::{DecodeError, ResponseDecoder},
             encoder::ReqOrRespEncoder,
         },
@@ -63,20 +64,17 @@ async fn main() {
         .await
         .expect("disconnected")
         .expect("parse response failed");
+    let resp = match resp {
+        DecodeItem::Head(h) => h,
+        DecodeItem::Body => panic!("unexpected type"),
+    };
     println!("Status code: {}", resp.head.status);
     let payload = match resp.payload {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };
-    monoio::pin! {
-        let process = process_payload(payload);
-    }
-    loop {
-        monoio::select! {
-            _ = receiver.next() => {},
-            _ = &mut process => return,
-        }
-    }
+    receiver.next().await;
+    process_payload(payload).await;
 }
 
 #[derive(Deserialize, Debug)]

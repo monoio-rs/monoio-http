@@ -55,13 +55,20 @@ where
     next_decoder: NextDecoder<FDE, SDE, BI>,
 }
 
+pub enum DecodeItem<T> {
+    /// Head is the http header.
+    Head(T),
+    /// Body means we have got the last body(ok or error) and sent.
+    Body,
+}
+
 impl<DE, I, FDE, SDE, BI> Decoder for ComposeDecoder<DE, I, FDE, SDE, BI>
 where
     DE: Decoder<Item = (I, NextDecoder<FDE, SDE, BI>)>,
     FDE: Decoder<Item = BI>,
     SDE: Decoder<Item = Option<BI>>,
 {
-    type Item = I;
+    type Item = DecodeItem<I>;
     type Error = DE::Error;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -73,9 +80,11 @@ where
                         let sender =
                             match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
                                 NextDecoder::Fixed(_, s) => s,
+                                // # Safety: We already make sure the branch is Fixed
                                 _ => unsafe { unreachable_unchecked() },
                             };
-                        sender.feed(Ok(item))
+                        sender.feed(Ok(item));
+                        return Ok(Some(DecodeItem::Body));
                     }
                     Ok(None) => {
                         return Ok(None);
@@ -84,9 +93,11 @@ where
                         let sender =
                             match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
                                 NextDecoder::Fixed(_, s) => s,
+                                // # Safety: We already make sure the branch is Fixed
                                 _ => unsafe { unreachable_unchecked() },
                             };
-                        sender.feed(Err(e))
+                        sender.feed(Err(e));
+                        return Ok(Some(DecodeItem::Body));
                     }
                 },
                 NextDecoder::Streamed(decoder, sender) => match decoder.decode(src) {
@@ -97,6 +108,7 @@ where
                         None => {
                             sender.feed_data(None);
                             self.next_decoder = NextDecoder::None;
+                            return Ok(Some(DecodeItem::Body));
                         }
                     },
                     Ok(None) => {
@@ -104,6 +116,8 @@ where
                     }
                     Err(e) => {
                         sender.feed_error(e);
+                        self.next_decoder = NextDecoder::None;
+                        return Ok(Some(DecodeItem::Body));
                     }
                 },
             }
@@ -116,7 +130,7 @@ where
             Err(e) => return Err(e),
         };
         self.next_decoder = next;
-        Ok(Some(item))
+        Ok(Some(DecodeItem::Head(item)))
     }
 }
 
@@ -183,11 +197,15 @@ mod tests {
         // Get
         assert!(matches!(
             framed.next().await.unwrap().unwrap(),
-            Request::Get([b'z', b'z'])
+            DecodeItem::Head(Request::Get([b'z', b'z']))
         ));
 
         // Post chunked
         let post = framed.next().await.unwrap().unwrap();
+        let post = match post {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         let task = match post {
             Request::Get(_) => panic!("unexpected"),
             Request::Post(data, payload) => {
@@ -209,16 +227,24 @@ mod tests {
                 })
             }
         };
+        assert!(matches!(
+            framed.next().await.unwrap().unwrap(),
+            DecodeItem::Body
+        ));
 
         // Get again
         assert!(matches!(
             framed.next().await.unwrap().unwrap(),
-            Request::Get([b'.', b'.'])
+            DecodeItem::Head(Request::Get([b'.', b'.']))
         ));
         task.await;
 
         // Post fixed
         let post = framed.next().await.unwrap().unwrap();
+        let post = match post {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         let task = match post {
             Request::Get(_) => panic!("unexpected"),
             Request::Post(data, payload) => {
@@ -236,6 +262,10 @@ mod tests {
                 })
             }
         };
+        assert!(matches!(
+            framed.next().await.unwrap().unwrap(),
+            DecodeItem::Body
+        ));
         assert!(framed.next().await.is_none());
         task.await;
     }

@@ -359,6 +359,8 @@ mod tests {
     use bytes::BytesMut;
     use monoio::io::stream::Stream;
 
+    use crate::h1::codec::compose::DecodeItem;
+
     use super::*;
 
     #[test]
@@ -417,6 +419,10 @@ mod tests {
         let mut data = BytesMut::from("GET /test HTTP/1.1\r\n\r\n");
         let mut decoder = RequestDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         assert_eq!(req.head.method, Method::GET);
         assert!(matches!(req.payload, Payload::None));
     }
@@ -426,6 +432,10 @@ mod tests {
         let mut data = BytesMut::from("HTTP/1.1 200 OK\r\n\r\n");
         let mut decoder = ResponseDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         assert_eq!(req.head.status, StatusCode::OK);
         assert!(matches!(req.payload, Payload::None));
     }
@@ -437,6 +447,10 @@ mod tests {
         );
         let mut decoder = RequestDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         assert_eq!(req.head.method, Method::POST);
         assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
         let payload = match req.payload {
@@ -447,6 +461,10 @@ mod tests {
             let data = payload.get().await.unwrap();
             assert_eq!(&data, &"body");
         });
+        assert!(matches!(
+            decoder.decode(&mut data).unwrap(),
+            Some(DecodeItem::Body)
+        ));
         assert!(decoder.decode_eof(&mut data).unwrap().is_none());
         handler.await
     }
@@ -458,6 +476,10 @@ mod tests {
         );
         let mut decoder = ResponseDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         assert_eq!(req.head.status, StatusCode::OK);
         assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
         let payload = match req.payload {
@@ -468,6 +490,10 @@ mod tests {
             let data = payload.get().await.unwrap();
             assert_eq!(&data, &"body");
         });
+        assert!(matches!(
+            decoder.decode(&mut data).unwrap(),
+            Some(DecodeItem::Body)
+        ));
         assert!(decoder.decode_eof(&mut data).unwrap().is_none());
         handler.await
     }
@@ -480,6 +506,10 @@ mod tests {
         );
         let mut decoder = RequestDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         assert_eq!(req.head.method, Method::PUT);
         let mut payload = match req.payload {
             Payload::Stream(p) => p,
@@ -495,6 +525,10 @@ mod tests {
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"line");
             assert!(payload.next().await.is_none());
         });
+        assert!(matches!(
+            decoder.decode(&mut data).unwrap(),
+            Some(DecodeItem::Body)
+        ));
         assert!(decoder.decode_eof(&mut data).unwrap().is_none());
         handler.await
     }
@@ -507,6 +541,10 @@ mod tests {
         );
         let mut decoder = ResponseDecoder::default();
         let req = decoder.decode(&mut data).unwrap().unwrap();
+        let req = match req {
+            DecodeItem::Head(h) => h,
+            DecodeItem::Body => panic!("unexpected type"),
+        };
         let mut payload = match req.payload {
             Payload::Stream(p) => p,
             _ => panic!("wrong payload type"),
@@ -516,6 +554,10 @@ mod tests {
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"line");
             assert!(payload.next().await.is_none());
         });
+        assert!(matches!(
+            decoder.decode(&mut data).unwrap(),
+            Some(DecodeItem::Body)
+        ));
         assert!(decoder.decode_eof(&mut data).unwrap().is_none());
         handler.await
     }

@@ -18,6 +18,7 @@ use monoio_http::{
     },
     h1::{
         codec::{
+            compose::DecodeItem,
             decoder::{DecodeError, RequestDecoder},
             encoder::ReqOrRespEncoder,
         },
@@ -61,7 +62,7 @@ async fn handle_connection(stream: TcpStream) {
                 println!("receive request failed, connection handler exit");
                 return;
             }
-            Some(Ok(item)) => match tx.send(item).await {
+            Some(Ok(DecodeItem::Head(item))) => match tx.send(item).await {
                 Err(_) => {
                     println!("request handler dropped, connection handler exit");
                     return;
@@ -70,6 +71,9 @@ async fn handle_connection(stream: TcpStream) {
                     println!("request handled success");
                 }
             },
+            Some(Ok(DecodeItem::Body)) => {
+                println!("request body receiving finished");
+            }
         }
     }
 }
