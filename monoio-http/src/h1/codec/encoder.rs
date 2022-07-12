@@ -287,6 +287,7 @@ where
             let (result, buf) = self.io.write_all(buf).await;
             self.buf = buf;
             result?;
+            self.buf.clear();
             self.io.flush().await?;
             Ok(())
         }
