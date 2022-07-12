@@ -3,14 +3,18 @@ use std::io;
 use bytes::Bytes;
 use http::{HeaderMap, StatusCode, Version};
 use monoio::{
-    io::{sink::Sink, stream::Stream},
-    net::{tcp::TcpOwnedWriteHalf, TcpListener, TcpStream},
+    io::{
+        sink::{Sink, SinkExt},
+        stream::Stream,
+    },
+    net::{TcpListener, TcpStream},
 };
 use monoio_codec::FramedRead;
 use monoio_http::{
     common::{
         request::Request,
         response::{Response, ResponseHead},
+        ReqOrResp,
     },
     h1::{
         codec::{
@@ -68,53 +72,24 @@ async fn handle_connection(stream: TcpStream) {
             },
         }
     }
-
-    // let mut task_slot = None;
-    // loop {
-    //     if task_slot.is_none() {
-    //         match receiver.next().await {
-    //             None => return,
-    //             Some(Ok(req)) => task_slot = Some(handle_request(req)),
-    //             Some(Err(e)) => println!("Parse request failed! {}", e),
-    //         }
-    //     }
-    //     let mut pinned = unsafe { Pin::new_unchecked(task_slot.as_mut().unwrap()) };
-    //     monoio::select! {
-    //         req = receiver.next() => {
-    //             match req {
-    //                 None => return,
-    //                 Some(Ok(req)) => task_slot = Some(handle_request(req)),
-    //                 Some(Err(e)) => println!("Parse request failed! {}", e),
-    //             }
-    //         },
-    //         resp = &mut pinned => {
-    //             task_slot = None;
-    //             if let Err(e) = sender.send(resp).await {
-    //                 println!("Send response failed! {}", e);
-    //                 return;
-    //             }
-    //         },
-    //     }
-    // }
 }
 
 async fn handle_task(
     mut receiver: SPSCReceiver<Request<Payload<Bytes, DecodeError>>>,
-    mut sender: ReqOrRespEncoder<TcpOwnedWriteHalf>,
-) {
+    mut sender: impl Sink<
+        ReqOrResp<ResponseHead, Payload<Bytes, io::Error>>,
+        Error = impl Into<io::Error>,
+    >,
+) -> Result<(), io::Error> {
     loop {
         let request = match receiver.recv().await {
             Some(r) => r,
             None => {
-                println!("channel closed, handle task exit");
-                return;
+                return Ok(());
             }
         };
         let resp = handle_request(request).await;
-        if let Err(e) = sender.send(resp).await {
-            println!("send failed: {e:?}, handle task exit");
-            return;
-        }
+        sender.send_and_flush(resp).await.map_err(Into::into)?;
     }
 }
 

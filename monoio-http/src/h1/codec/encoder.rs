@@ -1,11 +1,8 @@
 use std::{fmt::Write, future::Future, io};
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use http::{HeaderMap, HeaderValue, Version};
-use monoio::{
-    buf::RawBuf,
-    io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt},
-};
+use monoio::io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt};
 use monoio_codec::Encoder;
 
 use crate::{
@@ -230,8 +227,6 @@ where
                     HeadEncoder::set_length_header(header_map, Length::None);
                     // encode head to buffer
                     HeadEncoder.encode(item.head, &mut self.buf)?;
-                    // if there is no payload, flush it now and return.
-                    self.flush().await?;
                 }
                 Payload::Fixed(p) => {
                     // get data(to set content length and body)
@@ -247,12 +242,10 @@ where
                         self.flush().await?;
                         let (r, _) = self.io.write_all(data).await;
                         r?;
-                        self.io.flush().await?;
                     } else {
                         // the data length is small, we copy it to avoid too many
                         // syscall(head and body will be sent together).
                         FixedBodyEncoder.encode(&data, &mut self.buf)?;
-                        self.flush().await?;
                     }
                 }
                 Payload::Stream(mut p) => {
@@ -277,9 +270,6 @@ where
                             FixedBodyEncoder.encode(&data, &mut self.buf)?;
                         }
                     }
-                    if !self.buf.is_empty() {
-                        self.flush().await?;
-                    }
                 }
             }
 
@@ -287,26 +277,16 @@ where
         }
     }
 
-    // copied from monoio-codec
     fn flush(&mut self) -> Self::FlushFuture<'_> {
         async move {
-            while !self.buf.is_empty() {
-                let buf = self.buf.chunk();
-                let raw_buf = unsafe { RawBuf::new(buf.as_ptr(), buf.len()) };
-                match self.io.write(raw_buf).await.0 {
-                    Ok(0) => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "failed to write whole buffer",
-                        ));
-                    }
-                    Ok(n) => {
-                        self.buf.advance(n);
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
+            if self.buf.is_empty() {
+                return Ok(());
             }
+            // This action does not allocate.
+            let buf = std::mem::replace(&mut self.buf, BytesMut::new());
+            let (result, buf) = self.io.write_all(buf).await;
+            self.buf = buf;
+            result?;
             self.io.flush().await?;
             Ok(())
         }

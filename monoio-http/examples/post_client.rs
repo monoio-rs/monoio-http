@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Version};
-use monoio::io::{sink::Sink, stream::Stream};
+use monoio::io::{sink::SinkExt, stream::Stream};
 use monoio_codec::FramedRead;
 use monoio_http::{
     common::request::{Request, RequestHead},
@@ -53,7 +53,10 @@ async fn main() {
     let mut receiver = FramedRead::new(r, ResponseDecoder::default());
 
     println!("Connected, will send request");
-    sender.send(request).await.expect("unable to send request");
+    sender
+        .send_and_flush(request)
+        .await
+        .expect("unable to send request");
     println!("Request send, will wait for response");
     let resp = receiver
         .next()
