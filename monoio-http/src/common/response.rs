@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use http::{HeaderMap, StatusCode, Version};
 
-use crate::{ParamMut, ParamRef};
+use crate::{h1::payload::Payload, ParamMut, ParamRef};
 
 use super::ReqOrResp;
 
@@ -14,7 +14,7 @@ pub struct ResponseHead {
     pub headers: HeaderMap,
 }
 
-pub type Response<P> = ReqOrResp<ResponseHead, P>;
+pub type Response<P = Payload> = ReqOrResp<ResponseHead, P>;
 
 impl<P> From<(ResponseHead, P)> for Response<P> {
     fn from(inner: (ResponseHead, P)) -> Self {

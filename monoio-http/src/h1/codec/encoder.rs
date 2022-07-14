@@ -1,18 +1,27 @@
 use std::{fmt::Write, future::Future, io};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use http::{HeaderMap, HeaderValue, Version};
 use monoio::io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt};
 use monoio_codec::Encoder;
+use thiserror::Error as ThisError;
 
 use crate::{
     common::request::RequestHead,
     common::{response::ResponseHead, ReqOrResp},
-    h1::payload::Payload,
+    h1::payload::{Payload, PayloadError},
     ParamMut,
 };
 
 const AVERAGE_HEADER_SIZE: usize = 30;
+
+#[derive(ThisError, Debug)]
+pub enum EncodeError {
+    #[error("payload error")]
+    Payload(#[from] PayloadError),
+    #[error("io error {0}")]
+    Io(#[from] io::Error),
+}
 
 struct HeadEncoder;
 
@@ -177,7 +186,9 @@ impl Encoder<Option<&[u8]>> for ChunkedBodyEncoder {
     }
 }
 
-pub struct ReqOrRespEncoder<T> {
+/// Encoder for Request or Response(in fact it is not a encoder literally,
+/// it is with io, like FramedWrite).
+pub struct GenericEncoder<T> {
     io: T,
     buf: BytesMut,
 }
@@ -185,7 +196,7 @@ pub struct ReqOrRespEncoder<T> {
 const INITIAL_CAPACITY: usize = 8 * 1024;
 const BACKPRESSURE_BOUNDARY: usize = INITIAL_CAPACITY;
 
-impl<T> ReqOrRespEncoder<T> {
+impl<T> GenericEncoder<T> {
     pub fn new(io: T) -> Self {
         Self {
             io,
@@ -200,13 +211,14 @@ enum Length {
     Chunked,
 }
 
-impl<T, H> Sink<ReqOrResp<H, Payload<Bytes, io::Error>>> for ReqOrRespEncoder<T>
+impl<T, H> Sink<ReqOrResp<H, Payload>> for GenericEncoder<T>
 where
     T: AsyncWriteRent,
-    HeadEncoder: Encoder<H, Error = io::Error>,
     H: ParamMut<HeaderMap>,
+    HeadEncoder: Encoder<H>,
+    <HeadEncoder as Encoder<H>>::Error: Into<EncodeError>,
 {
-    type Error = io::Error;
+    type Error = EncodeError;
 
     type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
 
@@ -214,7 +226,7 @@ where
 
     type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
 
-    fn send(&mut self, mut item: ReqOrResp<H, Payload<Bytes, io::Error>>) -> Self::SendFuture<'_> {
+    fn send(&mut self, mut item: ReqOrResp<H, Payload>) -> Self::SendFuture<'_> {
         async move {
             // if there is too much content in buffer, flush it first
             if self.buf.len() > BACKPRESSURE_BOUNDARY {
@@ -226,7 +238,9 @@ where
                     // set special header
                     HeadEncoder::set_length_header(header_map, Length::None);
                     // encode head to buffer
-                    HeadEncoder.encode(item.head, &mut self.buf)?;
+                    HeadEncoder
+                        .encode(item.head, &mut self.buf)
+                        .map_err(Into::into)?;
                 }
                 Payload::Fixed(p) => {
                     // get data(to set content length and body)
@@ -234,7 +248,9 @@ where
                     // set special header
                     HeadEncoder::set_length_header(header_map, Length::ContentLength(data.len()));
                     // encode head to buffer
-                    HeadEncoder.encode(item.head, &mut self.buf)?;
+                    HeadEncoder
+                        .encode(item.head, &mut self.buf)
+                        .map_err(Into::into)?;
                     // flush
                     if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
                         // if data to send is too long, we will flush the buffer
@@ -252,7 +268,9 @@ where
                     // set special header
                     HeadEncoder::set_length_header(header_map, Length::Chunked);
                     // encode head to buffer
-                    HeadEncoder.encode(item.head, &mut self.buf)?;
+                    HeadEncoder
+                        .encode(item.head, &mut self.buf)
+                        .map_err(Into::into)?;
 
                     while let Some(data_result) = p.next().await {
                         let data = data_result?;

@@ -1,21 +1,23 @@
-use std::{borrow::Cow, io, marker::PhantomData};
+use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
 
 use bytes::{Buf, Bytes};
 use http::{
     header::HeaderName, method::InvalidMethod, status::InvalidStatusCode, uri::InvalidUri,
     HeaderMap, HeaderValue, Method, StatusCode, Uri, Version,
 };
-use monoio_codec::Decoder;
+use monoio::io::{stream::Stream, AsyncReadRent};
+use monoio_codec::{Decoder, FramedRead};
 use thiserror::Error as ThisError;
 
 use crate::{
     common::request::{Request, RequestHead},
     common::response::{Response, ResponseHead},
-    h1::payload::{fixed_payload_pair, stream_payload_pair, Payload},
+    h1::payload::{
+        fixed_payload_pair, stream_payload_pair, FixedPayloadSender, Payload, PayloadError,
+        StreamPayloadSender,
+    },
     ParamRef,
 };
-
-use super::compose::{ComposeDecoder, NextDecoder};
 
 const MAX_HEADERS: usize = 96;
 
@@ -35,6 +37,32 @@ pub enum DecodeError {
     Chunked,
     #[error("io error {0}")]
     Io(#[from] io::Error),
+    #[error("unexpected eof")]
+    UnexpectedEof,
+}
+
+/// NextDecoder maybe None, Fixed or Streamed.
+/// Mainly designed for no body, fixed-length body and chunked body.
+/// But generally, NextDecoder can be used to represent 0, 1, or more
+/// than 1 things to decode.
+pub enum NextDecoder<FDE, SDE, BI>
+where
+    FDE: Decoder<Item = BI>,
+    SDE: Decoder<Item = Option<BI>>,
+{
+    None,
+    Fixed(FDE, FixedPayloadSender<BI>),
+    Streamed(SDE, StreamPayloadSender<BI>),
+}
+
+impl<FDE, SDE, BI> Default for NextDecoder<FDE, SDE, BI>
+where
+    FDE: Decoder<Item = BI>,
+    SDE: Decoder<Item = Option<BI>>,
+{
+    fn default() -> Self {
+        NextDecoder::None
+    }
 }
 
 struct HeaderIndex {
@@ -49,9 +77,9 @@ const EMPTY_HEADER_INDEX: HeaderIndex = HeaderIndex {
 
 /// Decoder of http1 request header.
 #[derive(Default)]
-pub struct RequestHeaderDecoder;
+pub struct RequestHeadDecoder;
 
-impl Decoder for RequestHeaderDecoder {
+impl Decoder for RequestHeadDecoder {
     type Item = RequestHead;
     type Error = DecodeError;
 
@@ -109,9 +137,9 @@ impl Decoder for RequestHeaderDecoder {
 // TODO: less code copy
 /// Decoder of http1 response header.
 #[derive(Default)]
-pub struct ResponseHeaderDecoder;
+pub struct ResponseHeadDecoder;
 
-impl Decoder for ResponseHeaderDecoder {
+impl Decoder for ResponseHeadDecoder {
     type Item = ResponseHead;
     type Error = DecodeError;
 
@@ -264,12 +292,12 @@ impl Decoder for ChunkedBodyDecoder {
 /// A wrapper around D(normally RequestHeaderDecoder and ResponseHeaderDecoder).
 /// Mainly for extract special headers and return the raw item and payload to
 /// satisfy the constraint of `ComposeDecoder`.
-pub struct ComposedHeaderDecoder<R, D> {
+pub struct GenericHeadDecoder<R, D> {
     decoder: D,
     _marker: PhantomData<R>,
 }
 
-impl<R, D> ComposedHeaderDecoder<R, D> {
+impl<R, D> GenericHeadDecoder<R, D> {
     pub fn new(decoder: D) -> Self {
         Self {
             decoder,
@@ -278,16 +306,16 @@ impl<R, D> ComposedHeaderDecoder<R, D> {
     }
 }
 
-impl<R, D: Default> Default for ComposedHeaderDecoder<R, D> {
+impl<R, D: Default> Default for GenericHeadDecoder<R, D> {
     fn default() -> Self {
         Self::new(D::default())
     }
 }
 
-impl<R, D> Decoder for ComposedHeaderDecoder<R, D>
+impl<R, D> Decoder for GenericHeadDecoder<R, D>
 where
     D: Decoder<Error = DecodeError>,
-    R: From<(D::Item, Payload<Bytes, DecodeError>)>,
+    R: From<(D::Item, Payload<Bytes>)>,
     D::Item: ParamRef<HeaderMap>,
 {
     type Item = (R, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>);
@@ -338,35 +366,141 @@ where
     }
 }
 
-pub type RequestDecoder = ComposeDecoder<
-    ComposedHeaderDecoder<Request<Payload<Bytes, DecodeError>>, RequestHeaderDecoder>,
-    Request<Payload<Bytes, DecodeError>>,
-    FixedBodyDecoder,
-    ChunkedBodyDecoder,
-    Bytes,
->;
+pub struct GenericDecoder<IO, HD> {
+    framed: FramedRead<IO, HD>,
+    next_decoder: NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>,
+}
 
-pub type ResponseDecoder = ComposeDecoder<
-    ComposedHeaderDecoder<Response<Payload<Bytes, DecodeError>>, ResponseHeaderDecoder>,
-    Response<Payload<Bytes, DecodeError>>,
-    FixedBodyDecoder,
-    ChunkedBodyDecoder,
-    Bytes,
->;
+impl<IO, HD> GenericDecoder<IO, HD>
+where
+    HD: Default,
+{
+    pub fn new(io: IO) -> Self {
+        Self {
+            framed: FramedRead::new(io, HD::default()),
+            next_decoder: NextDecoder::default(),
+        }
+    }
+}
+
+impl<IO, HD, I> GenericDecoder<IO, HD>
+where
+    IO: AsyncReadRent,
+    HD: Decoder<
+        Item = (I, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>),
+        Error = DecodeError,
+    >,
+{
+    pub async fn fill_payload(&mut self) -> Result<(), DecodeError> {
+        loop {
+            match &mut self.next_decoder {
+                // If there is no next_decoder, use main decoder
+                NextDecoder::None => {
+                    return Ok(());
+                }
+                NextDecoder::Fixed(_, _) => {
+                    // Swap sender out
+                    let (mut decoder, sender) =
+                        match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
+                            NextDecoder::None => unsafe { unreachable_unchecked() },
+                            NextDecoder::Fixed(decoder, sender) => (decoder, sender),
+                            NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
+                        };
+                    match self.framed.next_with(&mut decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed(Err(PayloadError::UnexpectedEof));
+                            return Err(DecodeError::UnexpectedEof);
+                        }
+                        Some(Ok(item)) => {
+                            sender.feed(Ok(item));
+                        }
+                        Some(Err(e)) => {
+                            sender.feed(Err(PayloadError::Decode));
+                            return Err(e);
+                        }
+                    }
+                }
+                NextDecoder::Streamed(decoder, sender) => {
+                    match self.framed.next_with(decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed_error(PayloadError::UnexpectedEof);
+                            return Err(DecodeError::UnexpectedEof);
+                        }
+                        Some(Ok(item)) => {
+                            // Send data
+                            match item {
+                                Some(item) => {
+                                    sender.feed_data(Some(item));
+                                }
+                                None => {
+                                    sender.feed_data(None);
+                                    self.next_decoder = NextDecoder::None;
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            // Send error
+                            sender.feed_error(PayloadError::Decode);
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<IO, HD, I> Stream for GenericDecoder<IO, HD>
+where
+    IO: AsyncReadRent,
+    HD: Decoder<
+        Item = (I, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>),
+        Error = DecodeError,
+    >,
+{
+    type Item = Result<I, DecodeError>;
+    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> where Self: 'a;
+
+    fn next(&mut self) -> Self::NextFuture<'_> {
+        async move {
+            if !matches!(self.next_decoder, NextDecoder::None) {
+                if let Err(e) = self.fill_payload().await {
+                    return Some(Err(e));
+                }
+            }
+
+            match self.framed.next().await {
+                None => None,
+                Some(Ok((item, next_decoder))) => {
+                    self.next_decoder = next_decoder;
+                    Some(Ok(item))
+                }
+                Some(Err(e)) => Some(Err(e)),
+            }
+        }
+    }
+}
+
+pub type RequestDecoder<IO> = GenericDecoder<IO, GenericHeadDecoder<Request, RequestHeadDecoder>>;
+
+pub type ResponseDecoder<IO> =
+    GenericDecoder<IO, GenericHeadDecoder<Response, ResponseHeadDecoder>>;
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
-    use monoio::io::stream::Stream;
+    use std::collections::VecDeque;
 
-    use crate::h1::codec::compose::DecodeItem;
+    use bytes::BytesMut;
+    use monoio::{buf::IoVecWrapperMut, io::stream::Stream};
 
     use super::*;
 
     #[test]
     fn decode_request_header() {
         let mut data = BytesMut::from("GET /test HTTP/1.1\r\n\r\n");
-        let head = RequestHeaderDecoder.decode(&mut data).unwrap().unwrap();
+        let head = RequestHeadDecoder.decode(&mut data).unwrap().unwrap();
         assert_eq!(head.method, Method::GET);
         assert_eq!(head.version, Version::HTTP_11);
         assert_eq!(head.uri, "/test");
@@ -376,7 +510,7 @@ mod tests {
     #[test]
     fn decode_response_header() {
         let mut data = BytesMut::from("HTTP/1.1 200 OK\r\n\r\n");
-        let head = ResponseHeaderDecoder.decode(&mut data).unwrap().unwrap();
+        let head = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
         assert_eq!(head.status, StatusCode::OK);
         assert_eq!(head.version, Version::HTTP_11);
         assert!(data.is_empty());
@@ -414,102 +548,72 @@ mod tests {
         assert!(&decoder.decode(&mut data).is_err());
     }
 
-    #[test]
-    fn decode_request_without_body() {
-        let mut data = BytesMut::from("GET /test HTTP/1.1\r\n\r\n");
-        let mut decoder = RequestDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
+    macro_rules! mock {
+        ($($x:expr),*) => {{
+            let mut v = VecDeque::new();
+            v.extend(vec![$($x),*]);
+            Mock { calls: v }
+        }};
+    }
+
+    #[monoio::test_all]
+    async fn decode_request_without_body() {
+        let io = mock! { Ok(b"GET /test HTTP/1.1\r\n\r\n".to_vec()) };
+        let mut decoder = RequestDecoder::new(io);
+        let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.head.method, Method::GET);
         assert!(matches!(req.payload, Payload::None));
     }
 
-    #[test]
-    fn decode_response_without_body() {
-        let mut data = BytesMut::from("HTTP/1.1 200 OK\r\n\r\n");
-        let mut decoder = ResponseDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
+    #[monoio::test_all]
+    async fn decode_response_without_body() {
+        let io = mock! { Ok(b"HTTP/1.1 200 OK\r\n\r\n".to_vec()) };
+        let mut decoder = ResponseDecoder::new(io);
+        let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.head.status, StatusCode::OK);
         assert!(matches!(req.payload, Payload::None));
     }
 
     #[monoio::test_all]
     async fn decode_fixed_body_request() {
-        let mut data = BytesMut::from(
-            "POST /test HTTP/1.1\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody",
-        );
-        let mut decoder = RequestDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
+        let io = mock! { Ok(b"POST /test HTTP/1.1\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
+        let mut decoder = RequestDecoder::new(io);
+        let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.head.method, Method::POST);
         assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
         let payload = match req.payload {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };
-        let handler = monoio::spawn(async move {
-            let data = payload.get().await.unwrap();
-            assert_eq!(&data, &"body");
-        });
-        assert!(matches!(
-            decoder.decode(&mut data).unwrap(),
-            Some(DecodeItem::Body)
-        ));
-        assert!(decoder.decode_eof(&mut data).unwrap().is_none());
-        handler.await
+        assert!(decoder.fill_payload().await.is_ok());
+        let data = payload.get().await.unwrap();
+        assert_eq!(&data, &"body");
+        assert!(decoder.next().await.is_none());
     }
 
     #[monoio::test_all]
     async fn decode_fixed_body_response() {
-        let mut data = BytesMut::from(
-            "HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody",
-        );
-        let mut decoder = ResponseDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
+        let io = mock! { Ok(b"HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
+        let mut decoder = ResponseDecoder::new(io);
+        let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.head.status, StatusCode::OK);
         assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
         let payload = match req.payload {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };
-        let handler = monoio::spawn(async move {
-            let data = payload.get().await.unwrap();
-            assert_eq!(&data, &"body");
-        });
-        assert!(matches!(
-            decoder.decode(&mut data).unwrap(),
-            Some(DecodeItem::Body)
-        ));
-        assert!(decoder.decode_eof(&mut data).unwrap().is_none());
-        handler.await
+        assert!(decoder.fill_payload().await.is_ok());
+        let data = payload.get().await.unwrap();
+        assert_eq!(&data, &"body");
+        assert!(decoder.next().await.is_none());
     }
 
     #[monoio::test_all]
     async fn decode_chunked_request() {
-        let mut data = BytesMut::from(
-            "PUT /test HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n\
-            4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n",
-        );
-        let mut decoder = RequestDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
+        let io = mock! { Ok(b"PUT /test HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n\
+        4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
+        let mut decoder = RequestDecoder::new(io);
+        let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.head.method, Method::PUT);
         let mut payload = match req.payload {
             Payload::Stream(p) => p,
@@ -525,27 +629,18 @@ mod tests {
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"line");
             assert!(payload.next().await.is_none());
         });
-        assert!(matches!(
-            decoder.decode(&mut data).unwrap(),
-            Some(DecodeItem::Body)
-        ));
-        assert!(decoder.decode_eof(&mut data).unwrap().is_none());
+        assert!(decoder.fill_payload().await.is_ok());
+        assert!(decoder.next().await.is_none());
         handler.await
     }
 
     #[monoio::test_all]
     async fn decode_chunked_response() {
-        let mut data = BytesMut::from(
-            "HTTP/1.1 200 OK\r\nTransfer-encoDing: chunked\r\n\r\n\
-            4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n",
-        );
-        let mut decoder = ResponseDecoder::default();
-        let req = decoder.decode(&mut data).unwrap().unwrap();
-        let req = match req {
-            DecodeItem::Head(h) => h,
-            DecodeItem::Body => panic!("unexpected type"),
-        };
-        let mut payload = match req.payload {
+        let io = mock! { Ok(b"HTTP/1.1 200 OK\r\nTransfer-encoDing: chunked\r\n\r\n\
+        4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
+        let mut decoder = ResponseDecoder::new(io);
+        let resp = decoder.next().await.unwrap().unwrap();
+        let mut payload = match resp.payload {
             Payload::Stream(p) => p,
             _ => panic!("wrong payload type"),
         };
@@ -554,11 +649,54 @@ mod tests {
             assert_eq!(&payload.next().await.unwrap().unwrap(), &"line");
             assert!(payload.next().await.is_none());
         });
-        assert!(matches!(
-            decoder.decode(&mut data).unwrap(),
-            Some(DecodeItem::Body)
-        ));
-        assert!(decoder.decode_eof(&mut data).unwrap().is_none());
+        assert!(decoder.fill_payload().await.is_ok());
+        assert!(decoder.next().await.is_none());
         handler.await
+    }
+
+    // Mock struct copied from monoio-codec and tokio-util.
+    struct Mock {
+        calls: VecDeque<io::Result<Vec<u8>>>,
+    }
+
+    impl AsyncReadRent for Mock {
+        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+                B: 'a;
+        type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+                B: 'a;
+
+        fn read<T: monoio::buf::IoBufMut>(&mut self, mut buf: T) -> Self::ReadFuture<'_, T> {
+            async {
+                match self.calls.pop_front() {
+                    Some(Ok(data)) => {
+                        let n = data.len();
+                        debug_assert!(buf.bytes_total() >= n);
+                        unsafe {
+                            buf.write_ptr().copy_from_nonoverlapping(data.as_ptr(), n);
+                            buf.set_init(n)
+                        }
+                        (Ok(n), buf)
+                    }
+                    Some(Err(e)) => (Err(e), buf),
+                    None => (Ok(0), buf),
+                }
+            }
+        }
+
+        fn readv<T: monoio::buf::IoVecBufMut>(&mut self, mut buf: T) -> Self::ReadvFuture<'_, T> {
+            async move {
+                let slice = match IoVecWrapperMut::new(buf) {
+                    Ok(slice) => slice,
+                    Err(buf) => return (Ok(0), buf),
+                };
+
+                let (result, slice) = self.read(slice).await;
+                buf = slice.into_inner();
+                if let Ok(n) = result {
+                    unsafe { buf.set_init(n) };
+                }
+                (result, buf)
+            }
+        }
     }
 }

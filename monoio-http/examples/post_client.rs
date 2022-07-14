@@ -8,15 +8,10 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use http::{HeaderMap, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
-use monoio_codec::FramedRead;
 use monoio_http::{
     common::request::{Request, RequestHead},
     h1::{
-        codec::{
-            compose::DecodeItem,
-            decoder::{DecodeError, ResponseDecoder},
-            encoder::ReqOrRespEncoder,
-        },
+        codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
         payload::{FixedPayload, Payload},
     },
 };
@@ -50,8 +45,8 @@ async fn main() {
         .await
         .expect("unable to connect");
     let (r, w) = conn.into_split();
-    let mut sender = ReqOrRespEncoder::new(w);
-    let mut receiver = FramedRead::new(r, ResponseDecoder::default());
+    let mut sender = GenericEncoder::new(w);
+    let mut receiver = ResponseDecoder::new(r);
 
     println!("Connected, will send request");
     sender
@@ -64,16 +59,15 @@ async fn main() {
         .await
         .expect("disconnected")
         .expect("parse response failed");
-    let resp = match resp {
-        DecodeItem::Head(h) => h,
-        DecodeItem::Body => panic!("unexpected type"),
-    };
     println!("Status code: {}", resp.head.status);
     let payload = match resp.payload {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };
-    receiver.next().await;
+    receiver
+        .fill_payload()
+        .await
+        .expect("unable to get payload");
     process_payload(payload).await;
 }
 
@@ -84,7 +78,7 @@ struct HttpbinResponse {
     url: String,
 }
 
-async fn process_payload(payload: FixedPayload<Bytes, DecodeError>) {
+async fn process_payload(payload: FixedPayload) {
     let data = payload.get().await.expect("unable to read response body");
     let resp: HttpbinResponse = serde_json::from_slice(&data).expect("unable to parse json body");
     println!("Response json: {resp:?}");

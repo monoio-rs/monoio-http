@@ -1,20 +1,12 @@
 //! Simple HTTP Get example with low level codec.
 //! We use captive.apple.com as target service.
 
-use std::io;
-
-use bytes::Bytes;
 use http::{HeaderMap, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
-use monoio_codec::FramedRead;
 use monoio_http::{
     common::request::{Request, RequestHead},
     h1::{
-        codec::{
-            compose::DecodeItem,
-            decoder::{DecodeError, ResponseDecoder},
-            encoder::ReqOrRespEncoder,
-        },
+        codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
         payload::{FixedPayload, Payload},
     },
 };
@@ -32,7 +24,7 @@ async fn main() {
             version: Version::HTTP_11,
             headers,
         },
-        payload: Payload::<Bytes, io::Error>::None,
+        payload: Payload::None,
     };
 
     println!("Request constructed, will connect");
@@ -40,8 +32,8 @@ async fn main() {
         .await
         .expect("unable to connect");
     let (r, w) = conn.into_split();
-    let mut sender = ReqOrRespEncoder::new(w);
-    let mut receiver = FramedRead::new(r, ResponseDecoder::default());
+    let mut sender = GenericEncoder::new(w);
+    let mut receiver = ResponseDecoder::new(r);
 
     println!("Connected, will send request");
     sender
@@ -54,21 +46,20 @@ async fn main() {
         .await
         .expect("disconnected")
         .expect("parse response failed");
-    let resp = match resp {
-        DecodeItem::Head(h) => h,
-        DecodeItem::Body => panic!("unexpected"),
-    };
 
     println!("Status code: {}", resp.head.status);
     let payload = match resp.payload {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };
-    receiver.next().await;
+    receiver
+        .fill_payload()
+        .await
+        .expect("unable to get payload");
     process_payload(payload).await;
 }
 
-async fn process_payload(payload: FixedPayload<Bytes, DecodeError>) {
+async fn process_payload(payload: FixedPayload) {
     let data = payload.get().await.expect("unable to read response body");
     println!("Response body: {}", String::from_utf8_lossy(&data));
 }

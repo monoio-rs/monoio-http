@@ -2,13 +2,26 @@
 use std::{
     cell::UnsafeCell,
     collections::VecDeque,
+    io,
     rc::{Rc, Weak},
     task::Waker,
 };
 
+use bytes::Bytes;
 use monoio::{io::stream::Stream, macros::support::poll_fn};
+use thiserror::Error as ThisError;
 
-pub enum Payload<D, E> {
+#[derive(ThisError, Debug)]
+pub enum PayloadError {
+    #[error("unexpected eof")]
+    UnexpectedEof,
+    #[error("decode failed")]
+    Decode,
+    #[error("io error {0}")]
+    Io(#[from] io::Error),
+}
+
+pub enum Payload<D = Bytes, E = PayloadError> {
     None,
     Fixed(FixedPayload<D, E>),
     Stream(StreamPayload<D, E>),
@@ -62,12 +75,12 @@ pub fn stream_payload_pair<D, E>() -> (StreamPayload<D, E>, StreamPayloadSender<
 
 /// Fixed Payload
 #[derive(Debug)]
-pub struct FixedPayload<D, E> {
+pub struct FixedPayload<D = Bytes, E = PayloadError> {
     inner: Rc<UnsafeCell<FixedInner<D, E>>>,
 }
 
 /// Sender part of the fixed payload
-pub struct FixedPayloadSender<D, E> {
+pub struct FixedPayloadSender<D = Bytes, E = PayloadError> {
     inner: Weak<UnsafeCell<FixedInner<D, E>>>,
 }
 
@@ -138,12 +151,12 @@ impl<D, E> FixedPayloadSender<D, E> {
 
 /// Stream Payload
 #[derive(Debug)]
-pub struct StreamPayload<D, E> {
+pub struct StreamPayload<D = Bytes, E = PayloadError> {
     inner: Rc<UnsafeCell<StreamInner<D, E>>>,
 }
 
 /// Sender part of the stream payload
-pub struct StreamPayloadSender<D, E> {
+pub struct StreamPayloadSender<D = Bytes, E = PayloadError> {
     inner: Weak<UnsafeCell<StreamInner<D, E>>>,
 }
 

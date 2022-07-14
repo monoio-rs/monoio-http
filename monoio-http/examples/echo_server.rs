@@ -1,6 +1,3 @@
-use std::io;
-
-use bytes::Bytes;
 use http::{HeaderMap, StatusCode, Version};
 use monoio::{
     io::{
@@ -9,7 +6,6 @@ use monoio::{
     },
     net::{TcpListener, TcpStream},
 };
-use monoio_codec::FramedRead;
 use monoio_http::{
     common::{
         request::Request,
@@ -18,9 +14,8 @@ use monoio_http::{
     },
     h1::{
         codec::{
-            compose::DecodeItem,
-            decoder::{DecodeError, RequestDecoder},
-            encoder::ReqOrRespEncoder,
+            decoder::RequestDecoder,
+            encoder::{EncodeError, GenericEncoder},
         },
         payload::{FixedPayload, Payload},
     },
@@ -47,8 +42,8 @@ async fn main() {
 
 async fn handle_connection(stream: TcpStream) {
     let (r, w) = stream.into_split();
-    let sender = ReqOrRespEncoder::new(w);
-    let mut receiver = FramedRead::new(r, RequestDecoder::default());
+    let sender = GenericEncoder::new(w);
+    let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
     monoio::spawn(handle_task(rx, sender));
 
@@ -62,7 +57,7 @@ async fn handle_connection(stream: TcpStream) {
                 println!("receive request failed, connection handler exit");
                 return;
             }
-            Some(Ok(DecodeItem::Head(item))) => match tx.send(item).await {
+            Some(Ok(item)) => match tx.send(item).await {
                 Err(_) => {
                     println!("request handler dropped, connection handler exit");
                     return;
@@ -71,20 +66,14 @@ async fn handle_connection(stream: TcpStream) {
                     println!("request handled success");
                 }
             },
-            Some(Ok(DecodeItem::Body)) => {
-                println!("request body receiving finished");
-            }
         }
     }
 }
 
 async fn handle_task(
-    mut receiver: SPSCReceiver<Request<Payload<Bytes, DecodeError>>>,
-    mut sender: impl Sink<
-        ReqOrResp<ResponseHead, Payload<Bytes, io::Error>>,
-        Error = impl Into<io::Error>,
-    >,
-) -> Result<(), io::Error> {
+    mut receiver: SPSCReceiver<Request>,
+    mut sender: impl Sink<ReqOrResp<ResponseHead, Payload>, Error = impl Into<EncodeError>>,
+) -> Result<(), EncodeError> {
     loop {
         let request = match receiver.recv().await {
             Some(r) => r,
@@ -97,9 +86,7 @@ async fn handle_task(
     }
 }
 
-async fn handle_request(
-    req: Request<Payload<Bytes, DecodeError>>,
-) -> Response<Payload<Bytes, io::Error>> {
+async fn handle_request(req: Request) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert("Server", "monoio-http-demo".parse().unwrap());
     let mut has_error = false;
