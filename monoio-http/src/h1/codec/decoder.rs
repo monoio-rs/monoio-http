@@ -10,8 +10,14 @@ use monoio_codec::{Decoder, FramedRead};
 use thiserror::Error as ThisError;
 
 use crate::{
-    common::request::{Request, RequestHead},
-    common::response::{Response, ResponseHead},
+    common::{
+        ext::Reason,
+        request::{Request, RequestHead},
+    },
+    common::{
+        response::{Response, ResponseHead},
+        FromParts,
+    },
     h1::payload::{
         fixed_payload_pair, stream_payload_pair, FixedPayloadSender, Payload, PayloadError,
         StreamPayloadSender,
@@ -123,12 +129,11 @@ impl Decoder for RequestHeadDecoder {
             headers.append(name, value);
         }
 
-        let request_head = RequestHead {
-            method,
-            uri,
-            version,
-            headers,
-        };
+        let (mut request_head, _) = http::request::Request::new(()).into_parts();
+        request_head.method = method;
+        request_head.uri = uri;
+        request_head.version = version;
+        request_head.headers = headers;
 
         Ok(Some(request_head))
     }
@@ -183,12 +188,14 @@ impl Decoder for ResponseHeadDecoder {
             headers.append(name, value);
         }
 
-        let response_head = ResponseHead {
-            version,
-            status,
-            reason,
-            headers,
-        };
+        let (mut response_head, _) = http::response::Response::new(()).into_parts();
+        response_head.version = version;
+        response_head.status = status;
+        response_head.headers = headers;
+
+        if let Some(reason) = reason {
+            response_head.extensions.insert(Reason::from(reason));
+        }
 
         Ok(Some(response_head))
     }
@@ -315,7 +322,7 @@ impl<R, D: Default> Default for GenericHeadDecoder<R, D> {
 impl<R, D> Decoder for GenericHeadDecoder<R, D>
 where
     D: Decoder<Error = DecodeError>,
-    R: From<(D::Item, Payload<Bytes>)>,
+    R: FromParts<D::Item, Payload>,
     D::Item: ParamRef<HeaderMap>,
 {
     type Item = (R, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>);
@@ -339,7 +346,7 @@ where
                         Err(_) => return Err(DecodeError::Header),
                     };
                     let (payload, sender) = fixed_payload_pair();
-                    let request = R::from((head, Payload::from(payload)));
+                    let request = R::from_parts(head, Payload::from(payload));
                     return Ok(Some((
                         request,
                         NextDecoder::Fixed(FixedBodyDecoder(content_length), sender),
@@ -349,7 +356,7 @@ where
                     // TODO: only allow chunked and identity and ignore case.
                     if x.as_bytes() == b"chunked" {
                         let (payload, sender) = stream_payload_pair();
-                        let request = R::from((head, Payload::from(payload)));
+                        let request = R::from_parts(head, Payload::from(payload));
                         return Ok(Some((
                             request,
                             NextDecoder::Streamed(ChunkedBodyDecoder::default(), sender),
@@ -357,7 +364,7 @@ where
                     }
                 }
 
-                let request = R::from((head, Payload::None));
+                let request = R::from_parts(head, Payload::None);
                 Ok(Some((request, NextDecoder::None)))
             }
             Ok(None) => Ok(None),
@@ -561,8 +568,8 @@ mod tests {
         let io = mock! { Ok(b"GET /test HTTP/1.1\r\n\r\n".to_vec()) };
         let mut decoder = RequestDecoder::new(io);
         let req = decoder.next().await.unwrap().unwrap();
-        assert_eq!(req.head.method, Method::GET);
-        assert!(matches!(req.payload, Payload::None));
+        assert_eq!(req.method(), Method::GET);
+        assert!(matches!(req.body(), Payload::None));
     }
 
     #[monoio::test_all]
@@ -570,8 +577,8 @@ mod tests {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\n\r\n".to_vec()) };
         let mut decoder = ResponseDecoder::new(io);
         let req = decoder.next().await.unwrap().unwrap();
-        assert_eq!(req.head.status, StatusCode::OK);
-        assert!(matches!(req.payload, Payload::None));
+        assert_eq!(req.status(), StatusCode::OK);
+        assert!(matches!(req.body(), Payload::None));
     }
 
     #[monoio::test_all]
@@ -579,9 +586,9 @@ mod tests {
         let io = mock! { Ok(b"POST /test HTTP/1.1\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
         let mut decoder = RequestDecoder::new(io);
         let req = decoder.next().await.unwrap().unwrap();
-        assert_eq!(req.head.method, Method::POST);
-        assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
-        let payload = match req.payload {
+        assert_eq!(req.method(), Method::POST);
+        assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
+        let payload = match req.into_body() {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };
@@ -596,9 +603,9 @@ mod tests {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
         let mut decoder = ResponseDecoder::new(io);
         let req = decoder.next().await.unwrap().unwrap();
-        assert_eq!(req.head.status, StatusCode::OK);
-        assert_eq!(req.head.headers.get("test-key").unwrap(), "test-val");
-        let payload = match req.payload {
+        assert_eq!(req.status(), StatusCode::OK);
+        assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
+        let payload = match req.into_body() {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };
@@ -614,8 +621,8 @@ mod tests {
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
         let mut decoder = RequestDecoder::new(io);
         let req = decoder.next().await.unwrap().unwrap();
-        assert_eq!(req.head.method, Method::PUT);
-        let mut payload = match req.payload {
+        assert_eq!(req.method(), Method::PUT);
+        let mut payload = match req.into_body() {
             Payload::Stream(p) => p,
             _ => panic!("wrong payload type"),
         };
@@ -640,7 +647,7 @@ mod tests {
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
         let mut decoder = ResponseDecoder::new(io);
         let resp = decoder.next().await.unwrap().unwrap();
-        let mut payload = match resp.payload {
+        let mut payload = match resp.into_body() {
             Payload::Stream(p) => p,
             _ => panic!("wrong payload type"),
         };

@@ -8,7 +8,7 @@ use thiserror::Error as ThisError;
 
 use crate::{
     common::request::RequestHead,
-    common::{response::ResponseHead, ReqOrResp},
+    common::{ext::Reason, response::ResponseHead, IntoParts},
     h1::payload::{Payload, PayloadError},
     ParamMut,
 };
@@ -124,7 +124,7 @@ impl Encoder<&ResponseHead> for HeadEncoder {
         dst.extend_from_slice(item.status.as_str().as_bytes());
         dst.extend_from_slice(b" ");
         // put reason
-        if let Some(reason) = &item.reason {
+        if let Some(reason) = item.extensions.get::<Reason>() {
             dst.extend_from_slice(reason.as_bytes());
         } else {
             let reason = item
@@ -211,12 +211,13 @@ enum Length {
     Chunked,
 }
 
-impl<T, H> Sink<ReqOrResp<H, Payload>> for GenericEncoder<T>
+impl<T, R> Sink<R> for GenericEncoder<T>
 where
     T: AsyncWriteRent,
-    H: ParamMut<HeaderMap>,
-    HeadEncoder: Encoder<H>,
-    <HeadEncoder as Encoder<H>>::Error: Into<EncodeError>,
+    R: IntoParts<Body = Payload>,
+    R::Parts: ParamMut<HeaderMap>,
+    HeadEncoder: Encoder<R::Parts>,
+    <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
 {
     type Error = EncodeError;
 
@@ -226,20 +227,21 @@ where
 
     type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
 
-    fn send(&mut self, mut item: ReqOrResp<H, Payload>) -> Self::SendFuture<'_> {
+    fn send(&mut self, item: R) -> Self::SendFuture<'_> {
+        let (mut head, payload) = item.into_parts();
         async move {
             // if there is too much content in buffer, flush it first
             if self.buf.len() > BACKPRESSURE_BOUNDARY {
-                self.flush().await?;
+                Sink::<R>::flush(self).await?;
             }
-            let header_map = item.head.param_mut();
-            match item.payload {
+            let header_map = head.param_mut();
+            match payload {
                 Payload::None => {
                     // set special header
                     HeadEncoder::set_length_header(header_map, Length::None);
                     // encode head to buffer
                     HeadEncoder
-                        .encode(item.head, &mut self.buf)
+                        .encode(head, &mut self.buf)
                         .map_err(Into::into)?;
                 }
                 Payload::Fixed(p) => {
@@ -249,13 +251,13 @@ where
                     HeadEncoder::set_length_header(header_map, Length::ContentLength(data.len()));
                     // encode head to buffer
                     HeadEncoder
-                        .encode(item.head, &mut self.buf)
+                        .encode(head, &mut self.buf)
                         .map_err(Into::into)?;
                     // flush
                     if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
                         // if data to send is too long, we will flush the buffer
                         // first, and send Bytes directly.
-                        self.flush().await?;
+                        Sink::<R>::flush(self).await?;
                         let (r, _) = self.io.write_all(data).await;
                         r?;
                     } else {
@@ -269,7 +271,7 @@ where
                     HeadEncoder::set_length_header(header_map, Length::Chunked);
                     // encode head to buffer
                     HeadEncoder
-                        .encode(item.head, &mut self.buf)
+                        .encode(head, &mut self.buf)
                         .map_err(Into::into)?;
 
                     while let Some(data_result) = p.next().await {
@@ -278,7 +280,7 @@ where
                             // if data to send is too long, we will flush the buffer
                             // first, and send Bytes directly.
                             if !self.buf.is_empty() {
-                                self.flush().await?;
+                                Sink::<R>::flush(self).await?;
                             }
                             let (r, _) = self.io.write_all(data).await;
                             r?;
@@ -314,7 +316,7 @@ where
     // copied from monoio-codec
     fn close(&mut self) -> Self::CloseFuture<'_> {
         async move {
-            self.flush().await?;
+            Sink::<R>::flush(self).await?;
             self.io.shutdown().await?;
             Ok(())
         }

@@ -1,36 +1,36 @@
-use http::{HeaderMap, Method, Uri, Version};
+use crate::{
+    common::{FromParts, IntoParts},
+    h1::payload::Payload,
+    ParamMut, ParamRef,
+};
 
-use crate::{h1::payload::Payload, ParamMut, ParamRef};
+pub use http::request::Builder as RequestBuilder;
+pub use http::request::Parts as RequestHead;
 
-use super::ReqOrResp;
+pub type Request<P = Payload> = http::request::Request<P>;
 
-#[derive(Debug, Clone)]
-pub struct RequestHead {
-    pub method: Method,
-    pub uri: Uri,
-    pub version: Version,
-    pub headers: HeaderMap,
-}
-
-pub type Request<P = Payload> = ReqOrResp<RequestHead, P>;
-
-impl<P> From<(RequestHead, P)> for Request<P> {
-    fn from(inner: (RequestHead, P)) -> Self {
-        Self {
-            head: inner.0,
-            payload: inner.1,
-        }
+impl<P> FromParts<RequestHead, P> for Request<P> {
+    fn from_parts(parts: RequestHead, body: P) -> Self {
+        Self::from_parts(parts, body)
     }
 }
 
-impl ParamRef<HeaderMap> for RequestHead {
-    fn param_ref(&self) -> &HeaderMap {
+impl<P> IntoParts for Request<P> {
+    type Parts = RequestHead;
+    type Body = P;
+    fn into_parts(self) -> (Self::Parts, Self::Body) {
+        self.into_parts()
+    }
+}
+
+impl ParamRef<http::HeaderMap> for RequestHead {
+    fn param_ref(&self) -> &http::HeaderMap {
         &self.headers
     }
 }
 
-impl ParamMut<HeaderMap> for RequestHead {
-    fn param_mut(&mut self) -> &mut HeaderMap {
+impl ParamMut<http::HeaderMap> for RequestHead {
+    fn param_mut(&mut self) -> &mut http::HeaderMap {
         &mut self.headers
     }
 }

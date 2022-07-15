@@ -1,4 +1,4 @@
-use http::{HeaderMap, StatusCode, Version};
+use http::{response::Builder, HeaderMap, StatusCode};
 use monoio::{
     io::{
         sink::{Sink, SinkExt},
@@ -7,11 +7,7 @@ use monoio::{
     net::{TcpListener, TcpStream},
 };
 use monoio_http::{
-    common::{
-        request::Request,
-        response::{Response, ResponseHead},
-        ReqOrResp,
-    },
+    common::{request::Request, response::Response},
     h1::{
         codec::{
             decoder::RequestDecoder,
@@ -72,7 +68,7 @@ async fn handle_connection(stream: TcpStream) {
 
 async fn handle_task(
     mut receiver: SPSCReceiver<Request>,
-    mut sender: impl Sink<ReqOrResp<ResponseHead, Payload>, Error = impl Into<EncodeError>>,
+    mut sender: impl Sink<Response, Error = impl Into<EncodeError>>,
 ) -> Result<(), EncodeError> {
     loop {
         let request = match receiver.recv().await {
@@ -91,7 +87,7 @@ async fn handle_request(req: Request) -> Response {
     headers.insert("Server", "monoio-http-demo".parse().unwrap());
     let mut has_error = false;
     let mut has_payload = false;
-    let payload = match req.payload {
+    let payload = match req.into_body() {
         Payload::None => Payload::None,
         Payload::Fixed(p) => match p.get().await {
             Ok(data) => {
@@ -113,13 +109,9 @@ async fn handle_request(req: Request) -> Response {
     } else {
         StatusCode::NO_CONTENT
     };
-    Response {
-        head: ResponseHead {
-            version: Version::HTTP_11,
-            status,
-            reason: None,
-            headers,
-        },
-        payload,
-    }
+    Builder::new()
+        .status(status)
+        .header("Server", "monoio-http-demo")
+        .body(payload)
+        .unwrap()
 }

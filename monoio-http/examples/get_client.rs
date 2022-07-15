@@ -1,31 +1,24 @@
 //! Simple HTTP Get example with low level codec.
 //! We use captive.apple.com as target service.
 
-use http::{HeaderMap, Method, Version};
+use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
-use monoio_http::{
-    common::request::{Request, RequestHead},
-    h1::{
-        codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
-        payload::{FixedPayload, Payload},
-    },
+use monoio_http::h1::{
+    codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
+    payload::{FixedPayload, Payload},
 };
 
 #[monoio::main]
 async fn main() {
-    let mut headers = HeaderMap::new();
-    headers.insert(http::header::HOST, "captive.apple.com".parse().unwrap());
-    headers.insert(http::header::ACCEPT, "*/*".parse().unwrap());
-    headers.insert(http::header::USER_AGENT, "monoio-http".parse().unwrap());
-    let request = Request {
-        head: RequestHead {
-            method: Method::GET,
-            uri: "/".parse().unwrap(),
-            version: Version::HTTP_11,
-            headers,
-        },
-        payload: Payload::None,
-    };
+    let request = Builder::new()
+        .method(Method::GET)
+        .uri("/")
+        .version(Version::HTTP_11)
+        .header(http::header::HOST, "captive.apple.com")
+        .header(http::header::ACCEPT, "*/*")
+        .header(http::header::USER_AGENT, "monoio-http")
+        .body(Payload::None)
+        .unwrap();
 
     println!("Request constructed, will connect");
     let conn = monoio::net::TcpStream::connect("captive.apple.com:80")
@@ -47,8 +40,8 @@ async fn main() {
         .expect("disconnected")
         .expect("parse response failed");
 
-    println!("Status code: {}", resp.head.status);
-    let payload = match resp.payload {
+    println!("Status code: {}", resp.status());
+    let payload = match resp.into_body() {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };

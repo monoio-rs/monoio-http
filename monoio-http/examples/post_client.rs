@@ -6,14 +6,11 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use http::{HeaderMap, Method, Version};
+use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
-use monoio_http::{
-    common::request::{Request, RequestHead},
-    h1::{
-        codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
-        payload::{FixedPayload, Payload},
-    },
+use monoio_http::h1::{
+    codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
+    payload::{FixedPayload, Payload},
 };
 use serde::Deserialize;
 
@@ -22,23 +19,16 @@ const TEST_DATA: &str = r#"{"key": "val"}"#;
 #[monoio::main]
 async fn main() {
     let payload: Bytes = TEST_DATA.into();
-    let mut headers = HeaderMap::new();
-    headers.insert(http::header::HOST, "httpbin.org".parse().unwrap());
-    headers.insert(http::header::ACCEPT, "*/*".parse().unwrap());
-    headers.insert(http::header::USER_AGENT, "monoio-http".parse().unwrap());
-    headers.insert(
-        http::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
-    );
-    let request = Request {
-        head: RequestHead {
-            method: Method::POST,
-            uri: "/post".parse().unwrap(),
-            version: Version::HTTP_11,
-            headers,
-        },
-        payload: Payload::Fixed(FixedPayload::new(payload)),
-    };
+
+    let request = Builder::new()
+        .method(Method::POST)
+        .uri("/post")
+        .version(Version::HTTP_11)
+        .header(http::header::HOST, "httpbin.org")
+        .header(http::header::ACCEPT, "*/*")
+        .header(http::header::USER_AGENT, "monoio-http")
+        .body(Payload::Fixed(FixedPayload::new(payload)))
+        .unwrap();
 
     println!("Request constructed, will connect");
     let conn = monoio::net::TcpStream::connect("httpbin.org:80")
@@ -59,8 +49,8 @@ async fn main() {
         .await
         .expect("disconnected")
         .expect("parse response failed");
-    println!("Status code: {}", resp.head.status);
-    let payload = match resp.payload {
+    println!("Status code: {}", resp.status());
+    let payload = match resp.into_body() {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };

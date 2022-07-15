@@ -1,27 +1,27 @@
-use std::borrow::Cow;
+use http::HeaderMap;
 
-use http::{HeaderMap, StatusCode, Version};
+use crate::{
+    common::{FromParts, IntoParts},
+    h1::payload::Payload,
+    ParamMut, ParamRef,
+};
 
-use crate::{h1::payload::Payload, ParamMut, ParamRef};
+pub use http::response::Builder as ResponseBuilder;
+pub use http::response::Parts as ResponseHead;
 
-use super::ReqOrResp;
+pub type Response<P = Payload> = http::response::Response<P>;
 
-#[derive(Debug, Clone)]
-pub struct ResponseHead {
-    pub version: Version,
-    pub status: StatusCode,
-    pub reason: Option<Cow<'static, str>>,
-    pub headers: HeaderMap,
+impl<P> FromParts<ResponseHead, P> for Response<P> {
+    fn from_parts(parts: ResponseHead, body: P) -> Self {
+        Self::from_parts(parts, body)
+    }
 }
 
-pub type Response<P = Payload> = ReqOrResp<ResponseHead, P>;
-
-impl<P> From<(ResponseHead, P)> for Response<P> {
-    fn from(inner: (ResponseHead, P)) -> Self {
-        Self {
-            head: inner.0,
-            payload: inner.1,
-        }
+impl<P> IntoParts for Response<P> {
+    type Parts = ResponseHead;
+    type Body = P;
+    fn into_parts(self) -> (Self::Parts, Self::Body) {
+        self.into_parts()
     }
 }
 
