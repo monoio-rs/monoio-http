@@ -13,8 +13,6 @@ use crate::{
     common::{
         ext::Reason,
         request::{Request, RequestHead},
-    },
-    common::{
         response::{Response, ResponseHead},
         FromParts,
     },
@@ -173,7 +171,13 @@ impl Decoder for ResponseHeadDecoder {
                 Version::HTTP_10
             };
             let status = StatusCode::from_u16(res.code.unwrap())?;
-            let reason = res.reason.map(|r| Cow::Owned(r.to_owned()));
+            let reason = res.reason.and_then(|r| {
+                if Some(r) == status.canonical_reason() {
+                    None
+                } else {
+                    Some(Cow::Owned(r.to_owned()))
+                }
+            });
 
             (l, res.headers.len(), version, status, reason)
         };

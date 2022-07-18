@@ -1,6 +1,6 @@
 use std::{fmt::Write, future::Future, io};
 
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use http::{HeaderMap, HeaderValue, Version};
 use monoio::io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt};
 use monoio_codec::Encoder;
@@ -276,6 +276,8 @@ where
 
                     while let Some(data_result) = p.next().await {
                         let data = data_result?;
+                        write!(self.buf, "{}\r\n", data.len())
+                            .expect("unable to format data length");
                         if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
                             // if data to send is too long, we will flush the buffer
                             // first, and send Bytes directly.
@@ -289,7 +291,9 @@ where
                             // syscall.
                             FixedBodyEncoder.encode(&data, &mut self.buf)?;
                         }
+                        self.buf.put_slice(b"\r\n");
                     }
+                    self.buf.put_slice(b"0\r\n\r\n");
                 }
             }
 
