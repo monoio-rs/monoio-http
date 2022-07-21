@@ -4,7 +4,7 @@
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
 use monoio_http::h1::{
-    codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
+    codec::{decoder::FillPayload, ClientCodec},
     payload::{FixedPayload, Payload},
 };
 
@@ -24,17 +24,16 @@ async fn main() {
     let conn = monoio::net::TcpStream::connect("captive.apple.com:80")
         .await
         .expect("unable to connect");
-    let (r, w) = conn.into_split();
-    let mut sender = GenericEncoder::new(w);
-    let mut receiver = ResponseDecoder::new(r);
+    // You can also use raw io with encoder and decoder manually.
+    let mut codec = ClientCodec::new(conn);
 
     println!("Connected, will send request");
-    sender
+    codec
         .send_and_flush(request)
         .await
         .expect("unable to send request");
     println!("Request send, will wait for response");
-    let resp = receiver
+    let resp = codec
         .next()
         .await
         .expect("disconnected")
@@ -45,10 +44,7 @@ async fn main() {
         Payload::Fixed(payload) => payload,
         _ => panic!("unexpected payload type"),
     };
-    receiver
-        .fill_payload()
-        .await
-        .expect("unable to get payload");
+    codec.fill_payload().await.expect("unable to get payload");
     process_payload(payload).await;
 }
 

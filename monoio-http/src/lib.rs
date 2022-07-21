@@ -1,6 +1,10 @@
 #![feature(generic_associated_types)]
 #![feature(type_alias_impl_trait)]
 
+pub trait Param<T> {
+    fn param(&self) -> T;
+}
+
 pub trait ParamRef<T> {
     fn param_ref(&self) -> &T;
 }

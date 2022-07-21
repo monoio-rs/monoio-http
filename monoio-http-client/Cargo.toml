@@ -1,0 +1,22 @@
+[package]
+authors = ["ChiHai <ihciah@gmail.com>"]
+description = "Http client for Monoio."
+edition = "2021"
+name = "monoio-http-client"
+version = "0.0.1"
+
+[dependencies]
+monoio = {version = "0.0.7", path = "../../monoio/monoio"}
+monoio-http = {version = "*", path = "../monoio-http"}
+monoio-rustls = {version = "*", path = "../../monoio-tls/monoio-rustls"}
+
+http = "0.2"
+smol_str = "0.1"
+thiserror = "1"
+
+rustls = {version = "0.20", default-features = false, optional = true}
+webpki-roots = {version = "0.22", optional = true}
+
+[features]
+default = ["tls"]
+tls = ["rustls", "webpki-roots"]

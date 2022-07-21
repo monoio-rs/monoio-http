@@ -394,7 +394,16 @@ where
     }
 }
 
-impl<IO, HD, I> GenericDecoder<IO, HD>
+pub trait FillPayload {
+    type Error;
+    type FillPayloadFuture<'a>: std::future::Future<Output = Result<(), Self::Error>>
+    where
+        Self: 'a;
+
+    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_>;
+}
+
+impl<IO, HD, I> FillPayload for GenericDecoder<IO, HD>
 where
     IO: AsyncReadRent,
     HD: Decoder<
@@ -402,59 +411,67 @@ where
         Error = DecodeError,
     >,
 {
-    pub async fn fill_payload(&mut self) -> Result<(), DecodeError> {
-        loop {
-            match &mut self.next_decoder {
-                // If there is no next_decoder, use main decoder
-                NextDecoder::None => {
-                    return Ok(());
-                }
-                NextDecoder::Fixed(_, _) => {
-                    // Swap sender out
-                    let (mut decoder, sender) =
-                        match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
-                            NextDecoder::None => unsafe { unreachable_unchecked() },
-                            NextDecoder::Fixed(decoder, sender) => (decoder, sender),
-                            NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
-                        };
-                    match self.framed.next_with(&mut decoder).await {
-                        // EOF
-                        None => {
-                            sender.feed(Err(PayloadError::UnexpectedEof));
-                            return Err(DecodeError::UnexpectedEof);
-                        }
-                        Some(Ok(item)) => {
-                            sender.feed(Ok(item));
-                        }
-                        Some(Err(e)) => {
-                            sender.feed(Err(PayloadError::Decode));
-                            return Err(e);
-                        }
+    type Error = DecodeError;
+
+    type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>>
+    where
+        Self: 'a;
+
+    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_> {
+        async move {
+            loop {
+                match &mut self.next_decoder {
+                    // If there is no next_decoder, use main decoder
+                    NextDecoder::None => {
+                        return Ok(());
                     }
-                }
-                NextDecoder::Streamed(decoder, sender) => {
-                    match self.framed.next_with(decoder).await {
-                        // EOF
-                        None => {
-                            sender.feed_error(PayloadError::UnexpectedEof);
-                            return Err(DecodeError::UnexpectedEof);
-                        }
-                        Some(Ok(item)) => {
-                            // Send data
-                            match item {
-                                Some(item) => {
-                                    sender.feed_data(Some(item));
-                                }
-                                None => {
-                                    sender.feed_data(None);
-                                    self.next_decoder = NextDecoder::None;
-                                }
+                    NextDecoder::Fixed(_, _) => {
+                        // Swap sender out
+                        let (mut decoder, sender) =
+                            match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
+                                NextDecoder::None => unsafe { unreachable_unchecked() },
+                                NextDecoder::Fixed(decoder, sender) => (decoder, sender),
+                                NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
+                            };
+                        match self.framed.next_with(&mut decoder).await {
+                            // EOF
+                            None => {
+                                sender.feed(Err(PayloadError::UnexpectedEof));
+                                return Err(DecodeError::UnexpectedEof);
+                            }
+                            Some(Ok(item)) => {
+                                sender.feed(Ok(item));
+                            }
+                            Some(Err(e)) => {
+                                sender.feed(Err(PayloadError::Decode));
+                                return Err(e);
                             }
                         }
-                        Some(Err(e)) => {
-                            // Send error
-                            sender.feed_error(PayloadError::Decode);
-                            return Err(e);
+                    }
+                    NextDecoder::Streamed(decoder, sender) => {
+                        match self.framed.next_with(decoder).await {
+                            // EOF
+                            None => {
+                                sender.feed_error(PayloadError::UnexpectedEof);
+                                return Err(DecodeError::UnexpectedEof);
+                            }
+                            Some(Ok(item)) => {
+                                // Send data
+                                match item {
+                                    Some(item) => {
+                                        sender.feed_data(Some(item));
+                                    }
+                                    None => {
+                                        sender.feed_data(None);
+                                        self.next_decoder = NextDecoder::None;
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                // Send error
+                                sender.feed_error(PayloadError::Decode);
+                                return Err(e);
+                            }
                         }
                     }
                 }

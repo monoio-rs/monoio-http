@@ -1,2 +1,2 @@
 [workspace]
-members = ["monoio-http"]
+members = ["monoio-http", "monoio-http-client"]

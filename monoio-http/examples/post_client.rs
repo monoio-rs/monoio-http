@@ -9,7 +9,7 @@ use bytes::Bytes;
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
 use monoio_http::h1::{
-    codec::{decoder::ResponseDecoder, encoder::GenericEncoder},
+    codec::{decoder::{ResponseDecoder, FillPayload}, encoder::GenericEncoder},
     payload::{FixedPayload, Payload},
 };
 use serde::Deserialize;
