@@ -1,5 +1,6 @@
+use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
-use monoio_http::h1::payload::Payload;
+use monoio_http::h1::payload::{fixed_payload_pair, Payload};
 
 use crate::{client::Client, response::ClientResponse};
 
@@ -45,14 +46,29 @@ impl ClientRequest {
         self
     }
 
-    // TODO: Response -> ClientResponse?
-    // TODO: error handling
-    pub async fn send(self) -> Result<ClientResponse, ()> {
-        let resp = self
-            .client
-            .send(self.builder.body(Payload::None).unwrap())
-            .await
-            .unwrap();
+    pub async fn send(self) -> Result<ClientResponse, crate::Error> {
+        let request = Self::build_request(self.builder, Payload::None)?;
+        let resp = self.client.send(request).await?;
         Ok(ClientResponse::new(resp))
+    }
+
+    pub async fn send_body(self, data: Bytes) -> Result<ClientResponse, crate::Error> {
+        let (payload, payload_sender) = fixed_payload_pair();
+        payload_sender.feed(Ok(data));
+        let request = Self::build_request(self.builder, Payload::Fixed(payload))?;
+        let resp = self.client.send(request).await?;
+        Ok(ClientResponse::new(resp))
+    }
+
+    fn build_request(builder: Builder, body: Payload) -> crate::Result<http::Request<Payload>> {
+        let mut req = builder.body(body)?;
+        if let Some(host) = req.uri().host() {
+            let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
+            let headers = req.headers_mut();
+            if !headers.contains_key(http::header::HOST) {
+                headers.insert(http::header::HOST, host);
+            }
+        }
+        Ok(req)
     }
 }

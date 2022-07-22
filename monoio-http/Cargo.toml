@@ -9,7 +9,7 @@ version = "0.0.1"
 
 [dependencies]
 monoio = {version = "0.0.7", path = "../../monoio/monoio"}
-monoio-codec = {version = "0.0.2", path = "../../monoio-codec"}
+monoio-codec = {version = "0.0.3", path = "../../monoio-codec"}
 
 bytes = "1"
 http = "0.2"

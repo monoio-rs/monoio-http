@@ -689,9 +689,9 @@ mod tests {
 
     impl AsyncReadRent for Mock {
         type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-                B: 'a;
+                B: monoio::buf::IoBufMut + 'a;
         type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-                B: 'a;
+                B: monoio::buf::IoVecBufMut + 'a;
 
         fn read<T: monoio::buf::IoBufMut>(&mut self, mut buf: T) -> Self::ReadFuture<'_, T> {
             async {

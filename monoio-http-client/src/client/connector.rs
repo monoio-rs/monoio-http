@@ -4,7 +4,7 @@ use monoio::{
     io::{AsyncReadRent, AsyncWriteRent},
     net::TcpStream,
 };
-use monoio_http::{Param, h1::codec::ClientCodec};
+use monoio_http::{h1::codec::ClientCodec, Param};
 
 use super::pool::{ConnectionPool, PooledConnection};
 
@@ -97,9 +97,15 @@ pub struct PooledConnector<C, K: Hash + Eq, IO> {
     pool: ConnectionPool<K, IO>,
 }
 
-impl<C, K: Hash + Eq, IO> Clone for PooledConnector<C, K, IO> where C: Clone {
+impl<C, K: Hash + Eq, IO> Clone for PooledConnector<C, K, IO>
+where
+    C: Clone,
+{
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), pool: self.pool.clone() }
+        Self {
+            inner: self.inner.clone(),
+            pool: self.pool.clone(),
+        }
     }
 }
 

@@ -7,15 +7,21 @@ version = "0.0.1"
 
 [dependencies]
 monoio = {version = "0.0.7", path = "../../monoio/monoio"}
-monoio-http = {version = "*", path = "../monoio-http"}
-monoio-rustls = {version = "*", path = "../../monoio-tls/monoio-rustls"}
+monoio-http = {version = "0.0.1", path = "../monoio-http"}
+monoio-rustls = {version = "0.0.3", path = "../../monoio-tls/monoio-rustls"}
 
+bytes = "1"
 http = "0.2"
+serde = "1"
+serde_json = "1"
 smol_str = "0.1"
 thiserror = "1"
 
 rustls = {version = "0.20", default-features = false, optional = true}
 webpki-roots = {version = "0.22", optional = true}
+
+[dev-dependencies]
+serde = {version = "1", features = ["derive"]}
 
 [features]
 default = ["tls"]

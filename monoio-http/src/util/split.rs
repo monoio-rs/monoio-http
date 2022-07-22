@@ -18,10 +18,7 @@ pub struct OwnedWriteHalf<T>(Rc<UnsafeCell<T>>);
 /// User must make sure the io r/w can be done at the same time.
 pub unsafe fn split<T>(io: T) -> (OwnedReadHalf<T>, OwnedWriteHalf<T>) {
     let shared = Rc::new(UnsafeCell::new(io));
-    (
-        OwnedReadHalf(shared.clone()),
-        OwnedWriteHalf(shared),
-    )
+    (OwnedReadHalf(shared.clone()), OwnedWriteHalf(shared))
 }
 
 impl<IO> AsyncReadRent for OwnedReadHalf<IO>
@@ -29,9 +26,9 @@ where
     IO: AsyncReadRent,
 {
     type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-        B: 'a, Self: 'a;
+        B: IoBufMut + 'a, Self: 'a;
     type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-        B: 'a, Self: 'a;
+        B: IoVecBufMut + 'a, Self: 'a;
 
     fn read<T: IoBufMut>(&mut self, buf: T) -> Self::ReadFuture<'_, T> {
         // Submit the read operation
@@ -51,9 +48,9 @@ where
     IO: AsyncWriteRent,
 {
     type WriteFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-        B: 'a, Self: 'a;
+        B: IoBuf + 'a, Self: 'a;
     type WritevFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
-        B: 'a, Self: 'a;
+        B: IoVecBuf + 'a, Self: 'a;
     type FlushFuture<'a> = impl std::future::Future<Output = io::Result<()>> where Self: 'a;
     type ShutdownFuture<'a> = impl std::future::Future<Output = io::Result<()>> where Self: 'a;
 

@@ -4,9 +4,10 @@ pub mod pool;
 
 use std::rc::Rc;
 
-use http::HeaderMap;
+use http::{uri::Scheme, HeaderMap};
 use monoio::io::sink::SinkExt;
 use monoio::io::stream::Stream;
+use monoio_http::h1::codec::decoder::FillPayload;
 use monoio_http::h1::payload::Payload;
 
 use self::connector::Connector;
@@ -90,17 +91,40 @@ impl Client {
         req
     }
 
-    // TODO: error handling
     pub async fn send(
         &self,
         request: http::Request<Payload>,
-    ) -> Result<http::Response<Payload>, ()> {
+    ) -> Result<http::Response<Payload>, crate::Error> {
         let uri = request.uri();
-        let key = uri.try_into().unwrap();
-        let mut codec = self.shared.http_connector.connect(key).await.unwrap();
-        codec.send_and_flush(request).await.unwrap();
+        let key = uri.try_into()?;
+        #[cfg(feature = "tls")]
+        if uri
+            .scheme()
+            .map(|scheme| scheme == &Scheme::HTTPS)
+            .unwrap_or(false)
+        {
+            let mut codec = self.shared.https_connector.connect(key).await?;
+            codec.send_and_flush(request).await?;
+            // Note: the first unwrap is Option
+            let resp = codec.next().await.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "unexpected eof when read response",
+                )
+            })??;
+            codec.fill_payload().await?;
+            return Ok(resp);
+        }
+        let mut codec = self.shared.http_connector.connect(key).await?;
+        codec.send_and_flush(request).await?;
         // Note: the first unwrap is Option
-        let resp = codec.next().await.unwrap().unwrap();
+        let resp = codec.next().await.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "unexpected eof when read response",
+            )
+        })??;
+        codec.fill_payload().await?;
         Ok(resp)
     }
 }
