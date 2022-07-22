@@ -46,16 +46,29 @@ impl ClientRequest {
         self
     }
 
-    pub async fn send(self) -> Result<ClientResponse, crate::Error> {
+    pub async fn send(self) -> crate::Result<ClientResponse> {
         let request = Self::build_request(self.builder, Payload::None)?;
         let resp = self.client.send(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
-    pub async fn send_body(self, data: Bytes) -> Result<ClientResponse, crate::Error> {
+    pub async fn send_body(self, data: Bytes) -> crate::Result<ClientResponse> {
         let (payload, payload_sender) = fixed_payload_pair();
         payload_sender.feed(Ok(data));
         let request = Self::build_request(self.builder, Payload::Fixed(payload))?;
+        let resp = self.client.send(request).await?;
+        Ok(ClientResponse::new(resp))
+    }
+
+    pub async fn send_json<T: serde::Serialize>(self, data: &T) -> crate::Result<ClientResponse> {
+        let body: Bytes = serde_json::to_vec(data)?.into();
+        let builder = self.builder.header(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let (payload, payload_sender) = fixed_payload_pair();
+        payload_sender.feed(Ok(body));
+        let request = Self::build_request(builder, Payload::Fixed(payload))?;
         let resp = self.client.send(request).await?;
         Ok(ClientResponse::new(resp))
     }
