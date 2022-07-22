@@ -65,6 +65,18 @@ impl Default for Client {
     }
 }
 
+macro_rules! http_method {
+    ($fn: ident, $method: expr) => {
+        pub fn $fn<U>(&self, uri: U) -> ClientRequest
+        where
+            http::Uri: TryFrom<U>,
+            <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
+        {
+            self.request($method, uri)
+        }
+    };
+}
+
 impl Client {
     pub fn new() -> Self {
         let shared = Rc::new(ClientInner {
@@ -75,6 +87,13 @@ impl Client {
         });
         Self { shared }
     }
+
+    http_method!(get, http::Method::GET);
+    http_method!(post, http::Method::POST);
+    http_method!(put, http::Method::PUT);
+    http_method!(patch, http::Method::PATCH);
+    http_method!(delete, http::Method::DELETE);
+    http_method!(head, http::Method::HEAD);
 
     // TODO: allow other connector impl.
     pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest

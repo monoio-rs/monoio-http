@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
-use http::Method;
 use monoio_http_client::Client;
 
 #[monoio::main]
 async fn main() {
     let client = Client::new();
     let resp = client
-        .request(Method::GET, "http://httpbin.org/get")
+        .get("http://httpbin.org/get")
         .send()
         .await
         .expect("request fail");
