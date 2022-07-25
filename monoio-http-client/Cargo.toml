@@ -8,7 +8,7 @@ version = "0.0.1"
 [dependencies]
 monoio = {version = "0.0.7", path = "../../monoio/monoio"}
 monoio-http = {version = "0.0.1", path = "../monoio-http"}
-monoio-rustls = {version = "0.0.3", path = "../../monoio-tls/monoio-rustls"}
+monoio-rustls = {version = "0.0.3", default_features = false, features = ["tls12"], path = "../../monoio-tls/monoio-rustls", optional = true}
 
 bytes = "1"
 http = "0.2"
@@ -18,11 +18,17 @@ smol_str = "0.1"
 thiserror = "1"
 
 rustls = {version = "0.20", default-features = false, optional = true}
+tracing = {version = "0.1", optional = true}
 webpki-roots = {version = "0.22", optional = true}
 
 [dev-dependencies]
 serde = {version = "1", features = ["derive"]}
+tracing = {version = "0.1"}
+tracing-subscriber = {version = "0.3"}
 
 [features]
-default = ["tls"]
-tls = ["rustls", "webpki-roots"]
+default = ["tls", "unsafe-io"]
+
+logging = ["tracing", "monoio-rustls?/logging"]
+tls = ["rustls", "webpki-roots", "monoio-rustls"]
+unsafe-io = ["monoio-rustls?/unsafe_io"]

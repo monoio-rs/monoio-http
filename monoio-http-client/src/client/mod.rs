@@ -124,7 +124,6 @@ impl Client {
         {
             let mut codec = self.shared.https_connector.connect(key).await?;
             codec.send_and_flush(request).await?;
-            // Note: the first unwrap is Option
             let resp = codec.next().await.ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -136,7 +135,6 @@ impl Client {
         }
         let mut codec = self.shared.http_connector.connect(key).await?;
         codec.send_and_flush(request).await?;
-        // Note: the first unwrap is Option
         let resp = codec.next().await.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -144,6 +142,31 @@ impl Client {
             )
         })??;
         codec.fill_payload().await?;
+        // for http/1.1, if remote reply closed, we should mark the connection as not reuseable.
+        // TODO: handle Keep-Alive
+        if resp.version() == http::Version::HTTP_11
+            && matches!(
+                resp.headers()
+                    .get(http::header::CONNECTION)
+                    .map(|x| x.as_bytes()),
+                Some(b"closed")
+            )
+        {
+            codec.set_reuseable(false);
+        }
+        // for http/1.0, if remote not set Connection or set it as close, we should mark
+        // the connection as not reuseable.
+        if resp.version() == http::Version::HTTP_10
+            && matches!(
+                resp.headers()
+                    .get(http::header::CONNECTION)
+                    .map(|x| x.as_bytes()),
+                Some(b"closed") | None
+            )
+        {
+            codec.set_reuseable(false);
+        }
+
         Ok(resp)
     }
 }

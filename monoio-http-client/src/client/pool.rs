@@ -33,13 +33,24 @@ where
     key: Option<K>,
     // option is for take when drop
     io: Option<ClientCodec<IO>>,
+
     pool: WeakConns<K, IO>,
+    reuseable: bool,
 }
 
 impl<K: Hash + Eq, IO> Default for ConnectionPool<K, IO> {
     fn default() -> Self {
         let conns = Rc::new(UnsafeCell::new(HashMap::new()));
         Self { conns }
+    }
+}
+
+impl<K, IO> PooledConnection<K, IO>
+where
+    K: Hash + Eq,
+{
+    pub fn set_reuseable(&mut self, reuseable: bool) {
+        self.reuseable = reuseable;
     }
 }
 
@@ -68,6 +79,11 @@ where
     K: Hash + Eq,
 {
     fn drop(&mut self) {
+        if !self.reuseable {
+            #[cfg(feature = "logging")]
+            tracing::debug!("connection dropped");
+            return;
+        }
         if let Some(pool) = self.pool.upgrade() {
             let key = self.key.take().expect("unable to take key");
             let io = self.io.take().expect("unable to take connection");
@@ -75,6 +91,8 @@ where
                 .entry(key)
                 .or_default()
                 .push_back(io);
+            #[cfg(feature = "logging")]
+            tracing::debug!("connection reused");
         }
     }
 }
@@ -89,6 +107,7 @@ where
                 key: Some(key.to_owned()),
                 io: Some(io),
                 pool: Rc::downgrade(&self.conns),
+                reuseable: true,
             });
         }
         None
@@ -99,6 +118,7 @@ where
             key: Some(key),
             io: Some(io),
             pool: Rc::downgrade(&self.conns),
+            reuseable: true,
         }
     }
 }

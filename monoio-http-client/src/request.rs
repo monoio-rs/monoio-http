@@ -74,7 +74,7 @@ impl ClientRequest {
     }
 
     fn build_request(builder: Builder, body: Payload) -> crate::Result<http::Request<Payload>> {
-        let mut req = builder.body(body)?;
+        let mut req = builder.version(http::Version::HTTP_11).body(body)?;
         if let Some(host) = req.uri().host() {
             let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
             let headers = req.headers_mut();
