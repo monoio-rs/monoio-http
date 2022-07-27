@@ -1,11 +1,10 @@
 use monoio::io::{sink::Sink, stream::Stream};
 
-use crate::util::split::{split, OwnedReadHalf, OwnedWriteHalf};
-
 use super::{
     decoder::{FillPayload, RequestDecoder},
     encoder::GenericEncoder,
 };
+use crate::util::split::{split, OwnedReadHalf, OwnedWriteHalf};
 
 pub struct ServerCodec<IO> {
     encoder: GenericEncoder<OwnedWriteHalf<IO>>,

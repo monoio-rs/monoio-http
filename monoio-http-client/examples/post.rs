@@ -6,7 +6,7 @@ use monoio_http_client::Client;
 #[monoio::main]
 async fn main() {
     let client = Client::new();
-    let payload = Bytes::from_static(b"my_payload_data_balabala");
+    let payload = Bytes::from(b"my_payload_data_balabala".repeat(1000));
     let resp = client
         .post("https://httpbin.org/post")
         .send_body(payload)

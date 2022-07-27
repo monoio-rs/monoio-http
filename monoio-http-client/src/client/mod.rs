@@ -5,18 +5,14 @@ pub mod pool;
 use std::rc::Rc;
 
 use http::{uri::Scheme, HeaderMap};
-use monoio::io::sink::SinkExt;
-use monoio::io::stream::Stream;
-use monoio_http::h1::codec::decoder::FillPayload;
-use monoio_http::h1::payload::Payload;
-
-use self::connector::Connector;
-use crate::request::ClientRequest;
+use monoio::io::{sink::SinkExt, stream::Stream};
+use monoio_http::h1::{codec::decoder::FillPayload, payload::Payload};
 
 use self::{
-    connector::{DefaultTcpConnector, DefaultTlsConnector},
+    connector::{Connector, DefaultTcpConnector, DefaultTlsConnector},
     key::Key,
 };
+use crate::request::ClientRequest;
 
 // TODO: ClientBuilder
 pub struct ClientInner<C, #[cfg(feature = "tls")] CS> {

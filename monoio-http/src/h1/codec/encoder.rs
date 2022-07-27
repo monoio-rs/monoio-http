@@ -7,8 +7,7 @@ use monoio_codec::Encoder;
 use thiserror::Error as ThisError;
 
 use crate::{
-    common::request::RequestHead,
-    common::{ext::Reason, response::ResponseHead, IntoParts},
+    common::{ext::Reason, request::RequestHead, response::ResponseHead, IntoParts},
     h1::payload::{Payload, PayloadError},
     ParamMut,
 };

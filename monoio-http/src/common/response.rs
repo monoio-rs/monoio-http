@@ -1,3 +1,4 @@
+pub use http::response::{Builder as ResponseBuilder, Parts as ResponseHead};
 use http::HeaderMap;
 
 use crate::{
@@ -5,9 +6,6 @@ use crate::{
     h1::payload::Payload,
     ParamMut, ParamRef,
 };
-
-pub use http::response::Builder as ResponseBuilder;
-pub use http::response::Parts as ResponseHead;
 
 pub type Response<P = Payload> = http::response::Response<P>;
 

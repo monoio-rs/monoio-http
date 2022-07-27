@@ -1,11 +1,10 @@
+pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
+
 use crate::{
     common::{FromParts, IntoParts},
     h1::payload::Payload,
     ParamMut, ParamRef,
 };
-
-pub use http::request::Builder as RequestBuilder;
-pub use http::request::Parts as RequestHead;
 
 pub type Request<P = Payload> = http::request::Request<P>;
 
