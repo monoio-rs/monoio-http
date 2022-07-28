@@ -1,6 +1,6 @@
 use monoio_http_client::Client;
 
-#[monoio::main]
+#[monoio::main(enable_timer = true)]
 async fn main() {
     let client = Client::new();
     let resp = client

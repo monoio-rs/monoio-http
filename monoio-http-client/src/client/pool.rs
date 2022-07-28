@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "time")]
 const DEFAULT_IDLE_INTERVAL: Duration = Duration::from_secs(10);
 
 use monoio_http::h1::codec::ClientCodec;
@@ -23,14 +24,22 @@ struct IdleCodec<IO> {
 
 struct SharedInner<K, IO> {
     mapping: HashMap<K, VecDeque<IdleCodec<IO>>>,
+    #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
 impl<K, IO> SharedInner<K, IO> {
+    #[cfg(feature = "time")]
     fn new() -> (local_sync::oneshot::Sender<()>, Self) {
         let mapping = HashMap::new();
         let (tx, _drop) = local_sync::oneshot::channel();
         (tx, Self { mapping, _drop })
+    }
+
+    #[cfg(not(feature = "time"))]
+    fn new() -> Self {
+        let mapping = HashMap::new();
+        Self { mapping }
     }
 
     fn clear_expired(&mut self, dur: Duration) {
@@ -69,6 +78,7 @@ where
 }
 
 impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
+    #[cfg(feature = "time")]
     fn new(idle_interval: Option<Duration>) -> Self {
         let (tx, inner) = SharedInner::new();
         let conns = Rc::new(UnsafeCell::new(inner));
@@ -79,13 +89,26 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
             interval: monoio::time::interval(idle_interval),
             idle_dur: idle_interval,
         });
+
+        Self { conns }
+    }
+
+    #[cfg(not(feature = "time"))]
+    fn new() -> Self {
+        let conns = Rc::new(UnsafeCell::new(SharedInner::new()));
         Self { conns }
     }
 }
 
 impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
+    #[cfg(feature = "time")]
     fn default() -> Self {
         Self::new(None)
+    }
+
+    #[cfg(not(feature = "time"))]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use monoio_http_client::Client;
 
-#[monoio::main]
+#[monoio::main(enable_timer = true)]
 async fn main() {
     let client = Client::new();
     let payload = Bytes::from(b"my_payload_data_balabala".repeat(1000));

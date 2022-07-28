@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use monoio_http_client::Client;
 
-#[monoio::main]
+#[monoio::main(enable_timer = true)]
 async fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)

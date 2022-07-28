@@ -12,11 +12,11 @@ monoio-rustls = {version = "0.0.3", default_features = false, features = ["tls12
 
 bytes = "1"
 http = "0.2"
+local-sync = "0.0.5"
 serde = "1"
 serde_json = "1"
 smol_str = "0.1"
 thiserror = "1"
-local-sync = "0.0.5"
 
 rustls = {version = "0.20", default-features = false, optional = true}
 tracing = {version = "0.1", optional = true}
@@ -28,7 +28,10 @@ tracing = {version = "0.1"}
 tracing-subscriber = {version = "0.3"}
 
 [features]
-default = ["tls", "unsafe-io"]
+default = ["tls", "unsafe-io", "time"]
+# Enable this feature to make connection pool periodically checking works.
+# You must enable time driver to use it.
+time = []
 
 logging = ["tracing", "monoio-rustls?/logging"]
 tls = ["rustls", "webpki-roots", "monoio-rustls"]
