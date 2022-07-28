@@ -109,7 +109,7 @@ where
     }
 }
 
-impl<C, K: Hash + Eq, IO> Default for PooledConnector<C, K, IO>
+impl<C, K: Hash + Eq + 'static, IO: 'static> Default for PooledConnector<C, K, IO>
 where
     C: Default,
 {
