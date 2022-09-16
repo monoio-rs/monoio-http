@@ -2,7 +2,7 @@ use http::{response::Builder, HeaderMap, StatusCode};
 use monoio::{
     io::{
         sink::{Sink, SinkExt},
-        stream::Stream,
+        stream::Stream, Splitable,
     },
     net::{TcpListener, TcpStream},
 };

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use http::{request::Builder, Method, Version};
-use monoio::io::{sink::SinkExt, stream::Stream};
+use monoio::io::{sink::SinkExt, stream::Stream, Splitable};
 use monoio_http::h1::{
     codec::{
         decoder::{FillPayload, ResponseDecoder},
