@@ -275,7 +275,7 @@ where
 
                     while let Some(data_result) = p.next().await {
                         let data = data_result?;
-                        write!(self.buf, "{}\r\n", data.len())
+                        write!(self.buf, "{:X}\r\n", data.len())
                             .expect("unable to format data length");
                         if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
                             // if data to send is too long, we will flush the buffer
