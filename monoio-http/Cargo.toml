@@ -8,8 +8,8 @@ name = "monoio-http"
 version = "0.0.1"
 
 [dependencies]
-monoio = {version = "0.0.7", path = "../../monoio/monoio"}
-monoio-codec = {version = "0.0.3", path = "../../monoio-codec"}
+monoio = {version = "0.0.8"}
+monoio-codec = {version = "0.0.3"}
 
 bytes = "1"
 http = "0.2"

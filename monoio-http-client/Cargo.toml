@@ -2,13 +2,14 @@
 authors = ["ChiHai <ihciah@gmail.com>"]
 description = "Http client for Monoio."
 edition = "2021"
+license = "MIT/Apache-2.0"
 name = "monoio-http-client"
 version = "0.0.1"
 
 [dependencies]
-monoio = {version = "0.0.7", path = "../../monoio/monoio"}
+monoio = {version = "0.0.8"}
 monoio-http = {version = "0.0.1", path = "../monoio-http"}
-monoio-rustls = {version = "0.0.3", default_features = false, features = ["tls12"], path = "../../monoio-tls/monoio-rustls", optional = true}
+monoio-rustls = {version = "0.0.4", default_features = false, features = ["tls12"], optional = true}
 
 bytes = "1"
 http = "0.2"
@@ -28,7 +29,7 @@ tracing = {version = "0.1"}
 tracing-subscriber = {version = "0.3"}
 
 [features]
-default = ["tls", "unsafe-io", "time"]
+default = ["tls", "time"]
 # Enable this feature to make connection pool periodically checking works.
 # You must enable time driver to use it.
 time = []
