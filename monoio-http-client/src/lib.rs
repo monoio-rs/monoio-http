@@ -1,5 +1,4 @@
 #![allow(stable_features)]
-#![feature(generic_associated_types)]
 #![feature(type_alias_impl_trait)]
 
 mod client;

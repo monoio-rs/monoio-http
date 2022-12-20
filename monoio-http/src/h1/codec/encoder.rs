@@ -217,14 +217,15 @@ where
     R::Parts: ParamMut<HeaderMap>,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
+    R: 'static
 {
     type Error = EncodeError;
 
-    type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
+    type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
 
-    type FlushFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
+    type FlushFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
 
-    type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> where Self: 'a;
+    type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
 
     fn send(&mut self, item: R) -> Self::SendFuture<'_> {
         let (mut head, payload) = item.into_parts();

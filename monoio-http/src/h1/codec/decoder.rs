@@ -413,7 +413,7 @@ where
 {
     type Error = DecodeError;
 
-    type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>>
+    type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a;
 
@@ -489,7 +489,7 @@ where
     >,
 {
     type Item = Result<I, DecodeError>;
-    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> where Self: 'a;
+    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
 
     fn next(&mut self) -> Self::NextFuture<'_> {
         async move {
@@ -688,9 +688,9 @@ mod tests {
     }
 
     impl AsyncReadRent for Mock {
-        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
                 B: monoio::buf::IoBufMut + 'a;
-        type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+        type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
                 B: monoio::buf::IoVecBufMut + 'a;
 
         fn read<T: monoio::buf::IoBufMut>(&mut self, mut buf: T) -> Self::ReadFuture<'_, T> {
