@@ -74,10 +74,11 @@ where
     // TODO: do not require error type
     C: Connector<T, Error = io::Error>,
     C::Connection: AsyncReadRent + AsyncWriteRent,
+    T: 'static,
 {
     type Connection = monoio_rustls::ClientTlsStream<C::Connection>;
     type Error = monoio_rustls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> where C: 'a;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where C: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
         async move {
@@ -125,10 +126,11 @@ impl<C, T, IO> Connector<T> for PooledConnector<C, T, IO>
 where
     T: ToSocketAddrs + Hash + Eq + ToOwned<Owned = T>,
     C: Connector<T, Connection = IO>,
+    T: 'static,
 {
     type Connection = PooledConnection<T, IO>;
     type Error = C::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> where Self: 'a;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
         async move {
@@ -149,7 +151,7 @@ mod tests {
 
     use super::*;
 
-    #[monoio::test_all]
+    #[monoio::test_all(enable_timer = true)]
     async fn connect_tcp() {
         let connector = DefaultTcpConnector::<&'static str>::default();
         let begin = Instant::now();

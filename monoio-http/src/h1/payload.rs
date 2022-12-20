@@ -188,7 +188,7 @@ impl<D, E> StreamInner<D, E> {
 impl<D, E> Stream for StreamPayload<D, E> {
     type Item = Result<D, E>;
 
-    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> where Self:'a;
+    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
 
     fn next(&mut self) -> Self::NextFuture<'_> {
         async move {

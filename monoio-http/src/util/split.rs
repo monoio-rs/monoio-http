@@ -25,9 +25,9 @@ impl<IO> AsyncReadRent for OwnedReadHalf<IO>
 where
     IO: AsyncReadRent,
 {
-    type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+    type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
         B: IoBufMut + 'a, Self: 'a;
-    type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+    type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
         B: IoVecBufMut + 'a, Self: 'a;
 
     fn read<T: IoBufMut>(&mut self, buf: T) -> Self::ReadFuture<'_, T> {
@@ -47,12 +47,12 @@ impl<IO> AsyncWriteRent for OwnedWriteHalf<IO>
 where
     IO: AsyncWriteRent,
 {
-    type WriteFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+    type WriteFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
         B: IoBuf + 'a, Self: 'a;
-    type WritevFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> where
+    type WritevFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
         B: IoVecBuf + 'a, Self: 'a;
-    type FlushFuture<'a> = impl std::future::Future<Output = io::Result<()>> where Self: 'a;
-    type ShutdownFuture<'a> = impl std::future::Future<Output = io::Result<()>> where Self: 'a;
+    type FlushFuture<'a> = impl std::future::Future<Output = io::Result<()>> + 'a where Self: 'a;
+    type ShutdownFuture<'a> = impl std::future::Future<Output = io::Result<()>> + 'a where Self: 'a;
 
     fn write<T: IoBuf>(&mut self, buf: T) -> Self::WriteFuture<'_, T> {
         // Submit the write operation
