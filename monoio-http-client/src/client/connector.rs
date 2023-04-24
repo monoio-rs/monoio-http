@@ -70,11 +70,11 @@ impl Default for TlsConnector {
 #[cfg(feature = "tls")]
 impl<T, C> Connector<T> for TlsConnector<C>
 where
-    T: ToSocketAddrs + Param<rustls::ServerName>,
+    // TODO: remove 'static
+    T: ToSocketAddrs + Param<rustls::ServerName> + 'static,
     // TODO: do not require error type
     C: Connector<T, Error = io::Error>,
     C::Connection: AsyncReadRent + AsyncWriteRent,
-    T: 'static,
 {
     type Connection = monoio_rustls::ClientTlsStream<C::Connection>;
     type Error = monoio_rustls::TlsError;
@@ -126,7 +126,6 @@ impl<C, T, IO> Connector<T> for PooledConnector<C, T, IO>
 where
     T: ToSocketAddrs + Hash + Eq + ToOwned<Owned = T>,
     C: Connector<T, Connection = IO>,
-    T: 'static,
 {
     type Connection = PooledConnection<T, IO>;
     type Error = C::Error;
@@ -151,7 +150,7 @@ mod tests {
 
     use super::*;
 
-    #[monoio::test_all(enable_timer = true)]
+    #[monoio::test_all]
     async fn connect_tcp() {
         let connector = DefaultTcpConnector::<&'static str>::default();
         let begin = Instant::now();

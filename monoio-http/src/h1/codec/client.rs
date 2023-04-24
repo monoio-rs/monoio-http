@@ -30,7 +30,7 @@ where
 
     type SendFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::SendFuture<'a>
     where
-        Self: 'a;
+        Self: 'a, R: 'a;
 
     type FlushFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::FlushFuture<'a>
     where
@@ -40,7 +40,10 @@ where
     where
         Self: 'a;
 
-    fn send(&mut self, item: R) -> Self::SendFuture<'_> {
+    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
+    where
+        R: 'a,
+    {
         self.encoder.send(item)
     }
 

@@ -59,6 +59,7 @@ where
     Streamed(SDE, StreamPayloadSender<BI>),
 }
 
+#[allow(clippy::derivable_impls)]
 impl<FDE, SDE, BI> Default for NextDecoder<FDE, SDE, BI>
 where
     FDE: Decoder<Item = BI>,
@@ -69,16 +70,6 @@ where
     }
 }
 
-struct HeaderIndex {
-    name: (usize, usize),
-    value: (usize, usize),
-}
-
-const EMPTY_HEADER_INDEX: HeaderIndex = HeaderIndex {
-    name: (0, 0),
-    value: (0, 0),
-};
-
 /// Decoder of http1 request header.
 #[derive(Default)]
 pub struct RequestHeadDecoder;
@@ -88,44 +79,44 @@ impl Decoder for RequestHeadDecoder {
     type Error = DecodeError;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let mut header_indices = [EMPTY_HEADER_INDEX; MAX_HEADERS];
-        let (data_len, header_len, version, method, uri) = {
-            let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-            let mut req = httparse::Request::new(&mut headers);
-            let base_ptr = src.as_ptr() as usize;
-
-            let l = match req.parse(src)? {
-                httparse::Status::Complete(l) => l,
-                httparse::Status::Partial => return Ok(None),
-            };
-            for (h, index) in req.headers.iter().zip(header_indices.iter_mut()) {
-                let n_begin = h.name.as_ptr() as usize - base_ptr;
-                let n_end = n_begin + h.name.len();
-                let v_begin = h.value.as_ptr() as usize - base_ptr;
-                let v_end = v_begin + h.value.len();
-                index.name = (n_begin, n_end);
-                index.value = (v_begin, v_end);
-            }
-            let version = if req.version.unwrap() == 1 {
-                Version::HTTP_11
-            } else {
-                Version::HTTP_10
-            };
-            let method = Method::from_bytes(req.method.unwrap().as_bytes())?;
-            let uri = Uri::try_from(req.path.unwrap())?;
-
-            (l, req.headers.len(), version, method, uri)
-        };
-
+        let data_len = header_lines_len(src.as_ptr(), src.len())?;
+        if data_len < 4 {
+            // header line must at least have CRLFCRLF
+            return Ok(None);
+        }
         let data = src.split_to(data_len).freeze();
-        let mut headers = HeaderMap::with_capacity(MAX_HEADERS);
-        for header in header_indices.iter().take(header_len) {
-            let name = HeaderName::from_bytes(&data[header.name.0..header.name.1]).unwrap();
-            let value = unsafe {
-                HeaderValue::from_maybe_shared_unchecked(data.slice(header.value.0..header.value.1))
-            };
+        let base_ptr = data.as_ptr() as usize;
+        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+        let mut req = httparse::Request::new(&mut headers);
+        let parse_status = req.parse(&data)?;
+        if httparse::Status::Partial == parse_status {
+            return Ok(None);
+        }
+        let mut headers = HeaderMap::with_capacity(req.headers.len());
+        for h in req.headers.iter() {
+            let n_begin = h.name.as_ptr() as usize - base_ptr;
+            let n_end = n_begin + h.name.len();
+            let v_begin = h.value.as_ptr() as usize - base_ptr;
+            let v_end = v_begin + h.value.len();
+            let name = HeaderName::from_bytes(&data[n_begin..n_end]).unwrap();
+            let value =
+                unsafe { HeaderValue::from_maybe_shared_unchecked(data.slice(v_begin..v_end)) };
             headers.append(name, value);
         }
+        let version = match req.version {
+            Some(1) => Version::HTTP_11,
+            _ => Version::HTTP_10,
+        };
+        let method = Method::from_bytes(req.method.unwrap().as_bytes())?;
+        let uri = match req.path {
+            Some("/") => Uri::default(),
+            Some(path) => {
+                let uri_start = path.as_bytes().as_ptr() as usize - base_ptr;
+                let uri_end = uri_start + path.len();
+                Uri::from_maybe_shared(data.slice(uri_start..uri_end))?
+            }
+            _ => Uri::default(),
+        };
 
         let (mut request_head, _) = http::request::Request::new(()).into_parts();
         request_head.method = method;
@@ -147,50 +138,41 @@ impl Decoder for ResponseHeadDecoder {
     type Error = DecodeError;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let mut header_indices = [EMPTY_HEADER_INDEX; MAX_HEADERS];
-        let (data_len, header_len, version, status, reason) = {
-            let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-            let mut res = httparse::Response::new(&mut headers);
-            let base_ptr = src.as_ptr() as usize;
-
-            let l = match res.parse(src)? {
-                httparse::Status::Complete(l) => l,
-                httparse::Status::Partial => return Ok(None),
-            };
-            for (h, index) in res.headers.iter().zip(header_indices.iter_mut()) {
-                let n_begin = h.name.as_ptr() as usize - base_ptr;
-                let n_end = n_begin + h.name.len();
-                let v_begin = h.value.as_ptr() as usize - base_ptr;
-                let v_end = v_begin + h.value.len();
-                index.name = (n_begin, n_end);
-                index.value = (v_begin, v_end);
-            }
-            let version = if res.version.unwrap() == 1 {
-                Version::HTTP_11
-            } else {
-                Version::HTTP_10
-            };
-            let status = StatusCode::from_u16(res.code.unwrap())?;
-            let reason = res.reason.and_then(|r| {
-                if Some(r) == status.canonical_reason() {
-                    None
-                } else {
-                    Some(Cow::Owned(r.to_owned()))
-                }
-            });
-
-            (l, res.headers.len(), version, status, reason)
-        };
-
+        let data_len = header_lines_len(src.as_ptr(), src.len())?;
+        if data_len < 4 {
+            // header line must at least have CRLFCRLF
+            return Ok(None);
+        }
         let data = src.split_to(data_len).freeze();
-        let mut headers = HeaderMap::with_capacity(MAX_HEADERS);
-        for header in header_indices.iter().take(header_len) {
-            let name = HeaderName::from_bytes(&data[header.name.0..header.name.1]).unwrap();
-            let value = unsafe {
-                HeaderValue::from_maybe_shared_unchecked(data.slice(header.value.0..header.value.1))
-            };
+        let base_ptr = data.as_ptr() as usize;
+        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+        let mut res = httparse::Response::new(&mut headers);
+        let parse_status = res.parse(&data)?;
+        if httparse::Status::Partial == parse_status {
+            return Ok(None);
+        }
+
+        let mut headers = HeaderMap::with_capacity(res.headers.len());
+        for h in res.headers.iter() {
+            let n_begin = h.name.as_ptr() as usize - base_ptr;
+            let n_end = n_begin + h.name.len();
+            let v_begin = h.value.as_ptr() as usize - base_ptr;
+            let v_end = v_begin + h.value.len();
+            let name = HeaderName::from_bytes(&data[n_begin..n_end]).unwrap();
+            let value =
+                unsafe { HeaderValue::from_maybe_shared_unchecked(data.slice(v_begin..v_end)) };
             headers.append(name, value);
         }
+        let version = match res.version {
+            Some(1) => Version::HTTP_11,
+            _ => Version::HTTP_10,
+        };
+        let status = StatusCode::from_u16(res.code.unwrap())?;
+        let reason = match res.reason {
+            Some(r) if Some(r) == status.canonical_reason() => None,
+            Some(r) => Some(Cow::Owned(r.to_owned())),
+            None => None,
+        };
 
         let (mut response_head, _) = http::response::Response::new(()).into_parts();
         response_head.version = version;
@@ -349,12 +331,17 @@ where
                         Ok(c) => c,
                         Err(_) => return Err(DecodeError::Header),
                     };
-                    let (payload, sender) = fixed_payload_pair();
-                    let request = R::from_parts(head, Payload::from(payload));
-                    return Ok(Some((
-                        request,
-                        NextDecoder::Fixed(FixedBodyDecoder(content_length), sender),
-                    )));
+                    if content_length == 0 {
+                        let request = R::from_parts(head, Payload::None);
+                        return Ok(Some((request, NextDecoder::None)));
+                    } else {
+                        let (payload, sender) = fixed_payload_pair();
+                        let request = R::from_parts(head, Payload::from(payload));
+                        return Ok(Some((
+                            request,
+                            NextDecoder::Fixed(FixedBodyDecoder(content_length), sender),
+                        )));
+                    }
                 }
                 if let Some(x) = head.param_ref().get(http::header::TRANSFER_ENCODING) {
                     // TODO: only allow chunked and identity and ignore case.
@@ -515,6 +502,68 @@ pub type RequestDecoder<IO> = GenericDecoder<IO, GenericHeadDecoder<Request, Req
 
 pub type ResponseDecoder<IO> =
     GenericDecoder<IO, GenericHeadDecoder<Response, ResponseHeadDecoder>>;
+
+#[inline(always)]
+fn header_lines_len(ptr: *const u8, len: usize) -> Result<usize, DecodeError> {
+    const CR: u8 = b'\r';
+    const LF: u8 = b'\n';
+
+    #[inline(always)]
+    fn deref_char(ptr: &*const u8, index: usize) -> &u8 {
+        unsafe { &*ptr.add(index) }
+    }
+
+    if len < 4 {
+        return Ok(0);
+    }
+    let mut index = 0;
+    let mut result = 0;
+    loop {
+        let ch = deref_char(&ptr, index);
+        if ch == &CR {
+            if deref_char(&ptr, index - 2) == &CR
+                && deref_char(&ptr, index - 1) == &LF
+                && deref_char(&ptr, index + 1) == &LF
+            {
+                result = index + 2;
+                break;
+            } else if deref_char(&ptr, index + 1) == &LF
+                && deref_char(&ptr, index + 2) == &CR
+                && deref_char(&ptr, index + 3) == &LF
+            {
+                result = index + 4;
+                break;
+            }
+        } else if ch == &LF {
+            if deref_char(&ptr, index - 1) == &CR
+                && deref_char(&ptr, index + 1) == &CR
+                && deref_char(&ptr, index + 2) == &LF
+            {
+                result = index + 3;
+                break;
+            } else if deref_char(&ptr, index - 3) == &CR
+                && deref_char(&ptr, index - 2) == &LF
+                && deref_char(&ptr, index - 1) == &CR
+            {
+                result = index + 1;
+                break;
+            }
+        }
+        index += 4;
+        if index >= len {
+            break;
+        }
+    }
+    if result == 0 {
+        #[cfg(feature = "logging")]
+        tracing::error!("invalid header with len: {}, index: {}", len, index);
+        Ok(0)
+    } else if result > len {
+        Ok(len)
+    } else {
+        Ok(result)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -688,7 +737,7 @@ mod tests {
     }
 
     impl AsyncReadRent for Mock {
-        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
+        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> +'a where
                 B: monoio::buf::IoBufMut + 'a;
         type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
                 B: monoio::buf::IoVecBufMut + 'a;

@@ -1,7 +1,7 @@
 use std::{fmt::Write, future::Future, io};
 
 use bytes::{BufMut, BytesMut};
-use http::{HeaderMap, HeaderValue, Version};
+use http::{HeaderMap, HeaderValue, StatusCode, Version};
 use monoio::io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt};
 use monoio_codec::Encoder;
 use thiserror::Error as ThisError;
@@ -53,6 +53,7 @@ impl Encoder<&RequestHead> for HeadEncoder {
     type Error = io::Error;
 
     fn encode(&mut self, item: &RequestHead, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
+        // TODO: magic number here
         dst.reserve(256 + item.headers.len() * AVERAGE_HEADER_SIZE);
         // put http method
         dst.extend_from_slice(item.method.as_str().as_bytes());
@@ -68,20 +69,20 @@ impl Encoder<&RequestHead> for HeadEncoder {
         dst.extend_from_slice(b" ");
         // put version
         let ver = match item.version {
-            Version::HTTP_09 => "HTTP/0.9\r\n",
-            Version::HTTP_10 => "HTTP/1.0\r\n",
-            Version::HTTP_11 => "HTTP/1.1\r\n",
-            Version::HTTP_2 => "HTTP/2.0\r\n",
-            Version::HTTP_3 => "HTTP/3.0\r\n",
+            Version::HTTP_09 => b"HTTP/0.9\r\n",
+            Version::HTTP_10 => b"HTTP/1.0\r\n",
+            Version::HTTP_11 => b"HTTP/1.1\r\n",
+            Version::HTTP_2 => b"HTTP/2.0\r\n",
+            Version::HTTP_3 => b"HTTP/3.0\r\n",
             _ => return Err(io::Error::new(io::ErrorKind::Other, "unsupported version")),
         };
-        dst.extend_from_slice(ver.as_bytes());
+        dst.extend_from_slice(ver);
 
         // put headers
         for (name, value) in item.headers.iter() {
-            dst.extend_from_slice(name.as_str().as_bytes());
+            dst.extend_from_slice(name.as_ref());
             dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_bytes());
+            dst.extend_from_slice(value.as_ref());
             dst.extend_from_slice(b"\r\n");
         }
         dst.extend_from_slice(b"\r\n");
@@ -105,40 +106,48 @@ impl Encoder<&ResponseHead> for HeadEncoder {
         item: &ResponseHead,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
+        // TODO: magic number here
         dst.reserve(256 + item.headers.len() * AVERAGE_HEADER_SIZE);
         // put version
-        let ver = match item.version {
-            Version::HTTP_11 => b"HTTP/1.1 ",
-            Version::HTTP_10 => b"HTTP/1.0 ",
-            Version::HTTP_09 => b"HTTP/0.9 ",
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "unexpected http version",
-                ));
-            }
-        };
-        dst.extend_from_slice(&ver[..]);
-        // put status code
-        dst.extend_from_slice(item.status.as_str().as_bytes());
-        dst.extend_from_slice(b" ");
-        // put reason
-        if let Some(reason) = item.extensions.get::<Reason>() {
-            dst.extend_from_slice(reason.as_bytes());
+        if item.version == Version::HTTP_11
+            && item.status == StatusCode::OK
+            && item.extensions.get::<Reason>().is_none()
+        {
+            dst.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
         } else {
-            let reason = item
-                .status
-                .canonical_reason()
-                .unwrap_or("Unknown StatusCode");
-            dst.extend_from_slice(reason.as_bytes());
+            let ver = match item.version {
+                Version::HTTP_11 => b"HTTP/1.1 ",
+                Version::HTTP_10 => b"HTTP/1.0 ",
+                Version::HTTP_09 => b"HTTP/0.9 ",
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "unexpected http version",
+                    ));
+                }
+            };
+            dst.extend_from_slice(ver);
+            // put status code
+            dst.extend_from_slice(item.status.as_str().as_bytes());
+            dst.extend_from_slice(b" ");
+            // put reason
+            let reason = match item.extensions.get::<Reason>() {
+                Some(reason) => reason.as_bytes(),
+                None => item
+                    .status
+                    .canonical_reason()
+                    .unwrap_or("<none>")
+                    .as_bytes(),
+            };
+            dst.extend_from_slice(reason);
+            dst.extend_from_slice(b"\r\n");
         }
-        dst.extend_from_slice(b"\r\n");
 
         // put headers
         for (name, value) in item.headers.iter() {
-            dst.extend_from_slice(name.as_str().as_bytes());
+            dst.extend_from_slice(name.as_ref());
             dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_bytes());
+            dst.extend_from_slice(value.as_ref());
             dst.extend_from_slice(b"\r\n");
         }
         dst.extend_from_slice(b"\r\n");
@@ -217,17 +226,19 @@ where
     R::Parts: ParamMut<HeaderMap>,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
-    R: 'static
 {
     type Error = EncodeError;
 
-    type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
+    type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a, R: 'a;
 
     type FlushFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
 
     type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
 
-    fn send(&mut self, item: R) -> Self::SendFuture<'_> {
+    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
+    where
+        R: 'a,
+    {
         let (mut head, payload) = item.into_parts();
         async move {
             // if there is too much content in buffer, flush it first
