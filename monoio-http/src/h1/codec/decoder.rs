@@ -322,11 +322,8 @@ where
             // 2. validate headers to make sure content length can not be set with chunked encoding
             Ok(Some(head)) => {
                 if let Some(content_length) = head.param_ref().get(http::header::CONTENT_LENGTH) {
-                    let content_length = match content_length.to_str() {
-                        Ok(c) if c.starts_with('+') => return Err(DecodeError::Header),
-                        Ok(c) => c,
-                        Err(_) => return Err(DecodeError::Header),
-                    };
+                    let content_length =
+                        unsafe { std::str::from_utf8_unchecked(content_length.as_bytes()) };
                     let content_length = match content_length.parse::<usize>() {
                         Ok(c) => c,
                         Err(_) => return Err(DecodeError::Header),
@@ -567,12 +564,24 @@ fn header_lines_len(ptr: *const u8, len: usize) -> Result<usize, DecodeError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, time::Instant};
 
     use bytes::BytesMut;
     use monoio::{buf::IoVecWrapperMut, io::stream::Stream};
 
     use super::*;
+
+    #[test]
+    fn decode_request_header_multiple_times() {
+        let current = Instant::now();
+        for _ in 1..10000 {
+            let mut data = BytesMut::from("GET /ping HTTP/1.1\r\n\r\n");
+            let _ = RequestHeadDecoder.decode(&mut data).unwrap().unwrap();
+        }
+        let elapse = current.elapsed().as_millis();
+
+        println!("total time spend: {:?}", elapse);
+    }
 
     #[test]
     fn decode_request_header() {
@@ -585,12 +594,43 @@ mod tests {
     }
 
     #[test]
+    fn decode_response_header_multiple_times() {
+        let current = Instant::now();
+        for _ in 1..10000 {
+            let mut data =
+                BytesMut::from("HTTP/1.1 200 OK\r\nContent-Type:application/json\r\n\r\n");
+            let _ = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
+        }
+        let elapse = current.elapsed().as_millis();
+
+        println!("total time spend: {:?}", elapse);
+    }
+
+    #[test]
     fn decode_response_header() {
-        let mut data = BytesMut::from("HTTP/1.1 200 OK\r\n\r\n");
+        let mut data = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Type:application/json\r\n\r\n");
         let head = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
         assert_eq!(head.status, StatusCode::OK);
         assert_eq!(head.version, Version::HTTP_11);
+        assert_eq!(
+            head.headers.get(http::header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/json"))
+        );
         assert!(data.is_empty());
+    }
+
+    #[test]
+    fn decode_fixed_body_multiple_times() {
+        let current = Instant::now();
+        for _ in 1..10000 {
+            let mut data = BytesMut::from("balabalabalabala");
+            let mut decoder = FixedBodyDecoder(8);
+            let _ = decoder.decode(&mut data).unwrap().unwrap();
+        }
+
+        let elapse = current.elapsed().as_millis();
+
+        println!("total time spend: {:?}", elapse);
     }
 
     #[test]

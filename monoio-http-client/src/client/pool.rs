@@ -1,6 +1,7 @@
 use std::{
     cell::UnsafeCell,
     collections::{HashMap, VecDeque},
+    fmt::{Debug, Display},
     future::Future,
     hash::Hash,
     ops::{Deref, DerefMut},
@@ -10,7 +11,10 @@ use std::{
 };
 
 #[cfg(feature = "time")]
-const DEFAULT_IDLE_INTERVAL: Duration = Duration::from_secs(10);
+const DEFAULT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_KEEPALIVE_CONNS: usize = 256;
+// https://datatracker.ietf.org/doc/html/rfc6335
+const MAX_KEEPALIVE_CONNS: usize = 16384;
 
 use monoio_http::h1::codec::ClientCodec;
 
@@ -24,22 +28,44 @@ struct IdleCodec<IO> {
 
 struct SharedInner<K, IO> {
     mapping: HashMap<K, VecDeque<IdleCodec<IO>>>,
+    keepalive_conns: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
 impl<K, IO> SharedInner<K, IO> {
     #[cfg(feature = "time")]
-    fn new() -> (local_sync::oneshot::Sender<()>, Self) {
-        let mapping = HashMap::new();
+    fn new(
+        keepalive_conns: usize,
+        upstream_count: usize,
+    ) -> (local_sync::oneshot::Sender<()>, Self) {
+        let mapping = HashMap::with_capacity(upstream_count);
+        let mut keepalive_conns = keepalive_conns % MAX_KEEPALIVE_CONNS;
+        if keepalive_conns < DEFAULT_KEEPALIVE_CONNS {
+            keepalive_conns = DEFAULT_KEEPALIVE_CONNS;
+        }
         let (tx, _drop) = local_sync::oneshot::channel();
-        (tx, Self { mapping, _drop })
+        (
+            tx,
+            Self {
+                mapping,
+                _drop,
+                keepalive_conns,
+            },
+        )
     }
 
     #[cfg(not(feature = "time"))]
-    fn new() -> Self {
-        let mapping = HashMap::new();
-        Self { mapping }
+    fn new(keepalive_conns: usize, upstream_count: usize) -> Self {
+        let mapping = HashMap::with_capacity(upstream_count);
+        let mut keepalive_conns = keepalive_conns % MAX_KEEPALIVE_CONNS;
+        if keepalive_conns < DEFAULT_KEEPALIVE_CONNS {
+            keepalive_conns = DEFAULT_KEEPALIVE_CONNS;
+        }
+        Self {
+            mapping,
+            keepalive_conns,
+        }
     }
 
     fn clear_expired(&mut self, dur: Duration) {
@@ -66,7 +92,7 @@ impl<K: Hash + Eq, IO> Clone for ConnectionPool<K, IO> {
 
 pub struct PooledConnection<K, IO>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Display,
 {
     // option is for take when drop
     key: Option<K>,
@@ -79,8 +105,9 @@ where
 
 impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
-    fn new(idle_interval: Option<Duration>) -> Self {
-        let (tx, inner) = SharedInner::new();
+    fn new(idle_interval: Option<Duration>, keepalive_conns: usize) -> Self {
+        // TODO: update upstream count to a relevant number instead of the magic number.
+        let (tx, inner) = SharedInner::new(keepalive_conns, 32);
         let conns = Rc::new(UnsafeCell::new(inner));
         let idle_interval = idle_interval.unwrap_or(DEFAULT_IDLE_INTERVAL);
         monoio::spawn(IdleTask {
@@ -94,8 +121,8 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
     }
 
     #[cfg(not(feature = "time"))]
-    fn new() -> Self {
-        let conns = Rc::new(UnsafeCell::new(SharedInner::new()));
+    fn new(keepalive_conns: usize) -> Self {
+        let conns = Rc::new(UnsafeCell::new(SharedInner::new(keepalive_conns, 32)));
         Self { conns }
     }
 }
@@ -103,18 +130,18 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
 impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, DEFAULT_KEEPALIVE_CONNS)
     }
 
     #[cfg(not(feature = "time"))]
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_KEEPALIVE_CONNS)
     }
 }
 
 impl<K, IO> PooledConnection<K, IO>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Display,
 {
     pub fn set_reuseable(&mut self, reuseable: bool) {
         self.reuseable = reuseable;
@@ -123,7 +150,7 @@ where
 
 impl<K, IO> Deref for PooledConnection<K, IO>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Display,
 {
     type Target = ClientCodec<IO>;
 
@@ -134,7 +161,7 @@ where
 
 impl<K, IO> DerefMut for PooledConnection<K, IO>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Display,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.codec.as_mut().expect("connection should be present")
@@ -143,7 +170,7 @@ where
 
 impl<K, IO> Drop for PooledConnection<K, IO>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Display,
 {
     fn drop(&mut self) {
         if !self.reuseable {
@@ -151,6 +178,7 @@ where
             tracing::debug!("connection dropped");
             return;
         }
+
         if let Some(pool) = self.pool.upgrade() {
             let key = self.key.take().expect("unable to take key");
             let codec = self.codec.take().expect("unable to take connection");
@@ -158,11 +186,30 @@ where
                 codec,
                 idle_at: Instant::now(),
             };
-            unsafe { &mut *pool.get() }
+
+            let conns = unsafe { &mut *pool.get() };
+            #[cfg(feature = "logging")]
+            let key_str = key.to_string();
+            let queue = conns
                 .mapping
                 .entry(key)
-                .or_default()
-                .push_back(idle);
+                .or_insert(VecDeque::with_capacity(conns.keepalive_conns));
+
+            #[cfg(feature = "logging")]
+            tracing::debug!(
+                "connection pool size: {:?} for key: {:?}",
+                queue.len(),
+                key_str
+            );
+
+            if queue.len() > conns.keepalive_conns.into() {
+                #[cfg(feature = "logging")]
+                tracing::info!("connection pool is full for key: {:?}", key_str);
+                let _ = queue.pop_front();
+            }
+
+            queue.push_back(idle);
+
             #[cfg(feature = "logging")]
             tracing::debug!("connection recycled");
         }
@@ -171,20 +218,28 @@ where
 
 impl<K, IO> ConnectionPool<K, IO>
 where
-    K: Hash + Eq + ToOwned<Owned = K>,
+    K: Hash + Eq + ToOwned<Owned = K> + Display,
 {
     pub fn get(&self, key: &K) -> Option<PooledConnection<K, IO>> {
-        if let Some(v) = unsafe { &mut *self.conns.get() }.mapping.get_mut(key) {
-            #[cfg(feature = "logging")]
-            tracing::debug!("connection got from pool");
-            return v.pop_front().map(|idle| PooledConnection {
-                key: Some(key.to_owned()),
-                codec: Some(idle.codec),
-                pool: Rc::downgrade(&self.conns),
-                reuseable: true,
-            });
+        let conns = unsafe { &mut *self.conns.get() };
+
+        match conns.mapping.get_mut(key) {
+            Some(v) => {
+                #[cfg(feature = "logging")]
+                tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
+                v.pop_front().map(|idle| PooledConnection {
+                    key: Some(key.to_owned()),
+                    codec: Some(idle.codec),
+                    pool: Rc::downgrade(&self.conns),
+                    reuseable: true,
+                })
+            }
+            None => {
+                #[cfg(feature = "logging")]
+                tracing::debug!("no connection in pool for key: {:?} ", key.to_string());
+                None
+            }
         }
-        None
     }
 
     pub fn link(&self, key: K, io: ClientCodec<IO>) -> PooledConnection<K, IO> {

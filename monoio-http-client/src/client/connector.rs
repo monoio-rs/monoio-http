@@ -1,17 +1,23 @@
-use std::{future::Future, hash::Hash, io, net::ToSocketAddrs};
-
-use monoio::{
-    io::{AsyncReadRent, AsyncWriteRent},
-    net::TcpStream,
+use std::{
+    fmt::{Debug, Display},
+    future::Future,
+    hash::Hash,
+    io,
+    net::ToSocketAddrs,
+    sync::Arc,
 };
+
+use monoio::net::TcpStream;
 use monoio_http::{h1::codec::ClientCodec, Param};
+use rustls::client::ServerCertVerifier;
 
 use super::pool::{ConnectionPool, PooledConnection};
 
+pub type TlsStream = monoio_rustls::ClientTlsStream<TcpStream>;
+
 pub type DefaultTcpConnector<T> = PooledConnector<TcpConnector, T, TcpStream>;
 #[cfg(feature = "tls")]
-pub type DefaultTlsConnector<T> =
-    PooledConnector<TlsConnector, T, monoio_rustls::ClientTlsStream<TcpStream>>;
+pub type DefaultTlsConnector<T> = PooledConnector<TlsConnector, T, TlsStream>;
 
 pub trait Connector<K> {
     type Connection;
@@ -40,9 +46,25 @@ where
 
 #[cfg(feature = "tls")]
 #[derive(Clone)]
-pub struct TlsConnector<C = TcpConnector> {
-    tcp_connector: C,
+pub struct TlsConnector {
+    tcp_connector: TcpConnector,
     tls_connector: monoio_rustls::TlsConnector,
+}
+
+struct CustomServerCertVerifier;
+
+impl ServerCertVerifier for CustomServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
 }
 
 #[cfg(feature = "tls")]
@@ -56,10 +78,18 @@ impl Default for TlsConnector {
                 ta.name_constraints,
             )
         }));
+
+        // let cfg = rustls::ClientConfig::builder()
+        //     .with_safe_defaults()
+        //     .with_root_certificates(root_store)
+        //     .with_no_client_auth();
+
+        // allow server self-signed cert
         let cfg = rustls::ClientConfig::builder()
             .with_safe_defaults()
-            .with_root_certificates(root_store)
+            .with_custom_certificate_verifier(Arc::new(CustomServerCertVerifier))
             .with_no_client_auth();
+
         Self {
             tcp_connector: TcpConnector,
             tls_connector: cfg.into(),
@@ -68,17 +98,14 @@ impl Default for TlsConnector {
 }
 
 #[cfg(feature = "tls")]
-impl<T, C> Connector<T> for TlsConnector<C>
+impl<T> Connector<T> for TlsConnector
 where
     // TODO: remove 'static
     T: ToSocketAddrs + Param<rustls::ServerName> + 'static,
-    // TODO: do not require error type
-    C: Connector<T, Error = io::Error>,
-    C::Connection: AsyncReadRent + AsyncWriteRent,
 {
-    type Connection = monoio_rustls::ClientTlsStream<C::Connection>;
+    type Connection = TlsStream;
     type Error = monoio_rustls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where C: 'a;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
         async move {
@@ -124,7 +151,7 @@ where
 
 impl<C, T, IO> Connector<T> for PooledConnector<C, T, IO>
 where
-    T: ToSocketAddrs + Hash + Eq + ToOwned<Owned = T>,
+    T: ToSocketAddrs + Hash + Eq + ToOwned<Owned = T> + Display,
     C: Connector<T, Connection = IO>,
 {
     type Connection = PooledConnection<T, IO>;
