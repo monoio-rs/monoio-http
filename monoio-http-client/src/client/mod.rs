@@ -4,16 +4,17 @@ pub mod pool;
 
 use std::rc::Rc;
 
-use http::{uri::Scheme, HeaderMap};
+use http::HeaderMap;
 use monoio::io::{sink::SinkExt, stream::Stream};
 use monoio_http::h1::{codec::decoder::FillPayload, payload::Payload};
 
 use self::{
     connector::{Connector, DefaultTcpConnector, DefaultTlsConnector},
-    key::Key,
+    key::{FromUriError, Key},
 };
-use crate::request::ClientRequest;
+use crate::{request::ClientRequest, Error};
 
+const CONN_CLOSE: &[u8] = b"close";
 // TODO: ClientBuilder
 pub struct ClientInner<C, #[cfg(feature = "tls")] CS> {
     cfg: ClientConfig,
@@ -106,63 +107,122 @@ impl Client {
         req
     }
 
+    pub async fn send_http(
+        &self,
+        request: http::Request<Payload>,
+    ) -> Result<http::Response<Payload>, crate::Error> {
+        let key = request.uri().try_into()?;
+        if let Ok(mut codec) = self.shared.http_connector.connect(key).await {
+            match codec.send_and_flush(request).await {
+                Ok(_) => match codec.next().await {
+                    Some(Ok(resp)) => {
+                        if let Err(e) = codec.fill_payload().await {
+                            #[cfg(feature = "logging")]
+                            tracing::error!("fill payload error {:?}", e);
+                            return Err(Error::Decode(e));
+                        }
+                        let resp: http::Response<Payload> = resp;
+                        let header_value = resp.headers().get(http::header::CONNECTION);
+                        let reuse_conn = match header_value {
+                            Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
+                            None => resp.version() != http::Version::HTTP_10,
+                        };
+                        codec.set_reuseable(reuse_conn);
+                        Ok(resp)
+                    }
+                    Some(Err(e)) => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("decode upstream response error {:?}", e);
+                        Err(Error::Decode(e))
+                    }
+                    None => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("upstream return eof");
+                        codec.set_reuseable(false);
+                        Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "unexpected eof when read response",
+                        )))
+                    }
+                },
+                Err(e) => {
+                    #[cfg(feature = "logging")]
+                    tracing::error!("send upstream request error {:?}", e);
+                    Err(Error::Encode(e))
+                }
+            }
+        } else {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection established failed",
+            )))
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    pub async fn send_https(
+        &self,
+        request: http::Request<Payload>,
+    ) -> Result<http::Response<Payload>, crate::Error> {
+        let key = request.uri().try_into()?;
+        if let Ok(mut codec) = self.shared.https_connector.connect(key).await {
+            match codec.send_and_flush(request).await {
+                Ok(_) => match codec.next().await {
+                    Some(Ok(resp)) => {
+                        if let Err(e) = codec.fill_payload().await {
+                            #[cfg(feature = "logging")]
+                            tracing::error!("fill payload error {:?}", e);
+                            return Err(Error::Decode(e));
+                        }
+                        let resp: http::Response<Payload> = resp;
+                        let header_value = resp.headers().get(http::header::CONNECTION);
+                        let reuse_conn = match header_value {
+                            Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
+                            None => resp.version() != http::Version::HTTP_10,
+                        };
+                        codec.set_reuseable(reuse_conn);
+                        Ok(resp)
+                    }
+                    Some(Err(e)) => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("decode upstream response error {:?}", e);
+                        Err(Error::Decode(e))
+                    }
+                    None => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("upstream return eof");
+                        codec.set_reuseable(false);
+                        Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "unexpected eof when read response",
+                        )))
+                    }
+                },
+                Err(e) => {
+                    #[cfg(feature = "logging")]
+                    tracing::error!("send upstream request error {:?}", e);
+                    Err(Error::Encode(e))
+                }
+            }
+        } else {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection established failed",
+            )))
+        }
+    }
+
     pub async fn send(
         &self,
         request: http::Request<Payload>,
     ) -> Result<http::Response<Payload>, crate::Error> {
-        let uri = request.uri();
-        let key = uri.try_into()?;
-        #[cfg(feature = "tls")]
-        if uri
-            .scheme()
-            .map(|scheme| scheme == &Scheme::HTTPS)
-            .unwrap_or(false)
-        {
-            let mut codec = self.shared.https_connector.connect(key).await?;
-            codec.send_and_flush(request).await?;
-            let resp = codec.next().await.ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "unexpected eof when read response",
-                )
-            })??;
-            codec.fill_payload().await?;
-            return Ok(resp);
+        match request.uri().scheme() {
+            Some(scheme) => match scheme.as_str() {
+                "http" => self.send_http(request).await,
+                "https" => self.send_https(request).await,
+                _ => Err(Error::FromUri(FromUriError::UnsupportScheme)),
+            },
+            None => Err(Error::FromUri(FromUriError::UnsupportScheme)),
         }
-        let mut codec = self.shared.http_connector.connect(key).await?;
-        codec.send_and_flush(request).await?;
-        let resp = codec.next().await.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected eof when read response",
-            )
-        })??;
-        codec.fill_payload().await?;
-        // for http/1.1, if remote reply closed, we should mark the connection as not reuseable.
-        // TODO: handle Keep-Alive
-        if resp.version() == http::Version::HTTP_11
-            && matches!(
-                resp.headers()
-                    .get(http::header::CONNECTION)
-                    .map(|x| x.as_bytes()),
-                Some(b"closed")
-            )
-        {
-            codec.set_reuseable(false);
-        }
-        // for http/1.0, if remote not set Connection or set it as close, we should mark
-        // the connection as not reuseable.
-        if resp.version() == http::Version::HTTP_10
-            && matches!(
-                resp.headers()
-                    .get(http::header::CONNECTION)
-                    .map(|x| x.as_bytes()),
-                Some(b"closed") | None
-            )
-        {
-            codec.set_reuseable(false);
-        }
-
-        Ok(resp)
     }
 }

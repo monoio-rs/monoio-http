@@ -1,4 +1,4 @@
-use std::{hash::Hash, net::ToSocketAddrs};
+use std::{fmt::Display, hash::Hash, net::ToSocketAddrs};
 
 use http::{uri::Authority, Uri};
 use monoio_http::{Param, ParamMut, ParamRef};
@@ -20,6 +20,12 @@ impl Clone for Key {
             #[cfg(feature = "tls")]
             server_name: self.server_name.clone(),
         }
+    }
+}
+
+impl Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
     }
 }
 
@@ -72,6 +78,8 @@ pub enum FromUriError {
     #[cfg(feature = "tls")]
     #[error("invalid dns name")]
     InvalidDnsName(#[from] rustls::client::InvalidDnsNameError),
+    #[error("scheme not support")]
+    UnsupportScheme,
     #[error("no authority in uri")]
     NoAuthority,
 }

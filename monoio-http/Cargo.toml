@@ -8,14 +8,21 @@ name = "monoio-http"
 version = "0.0.2"
 
 [dependencies]
-monoio = {version = "0.1.2"}
-monoio-codec = {version = "0.0.4"}
+monoio = { version = "0.1.2" }
+monoio-codec = { version = "0.0.4" }
 
 bytes = "1"
 http = "0.2"
 httparse = "1"
 thiserror = "1"
 
+tracing = { version = "0.1", optional = true }
+
 [dev-dependencies]
-serde = {version = "1", features = ["derive"]}
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = { version = "0.1" }
+
+[features]
+default = []
+logging = ["tracing"]
