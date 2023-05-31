@@ -5,8 +5,6 @@ Monoio-HTTP is a low level crate for http with Monoio runtime. We use pure async
 - [x] Client/server side encoder/decoder
 - [x] Chunked support
     - [ ] Trailer support
-- [x] Chunked support
-
 
 ## Note
 This crate is a work in progress.

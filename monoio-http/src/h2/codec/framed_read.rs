@@ -357,14 +357,11 @@ where
                 } = *self;
 
                 match decode_frame(hpack, max_header_list_size, partial, bytes) {
-                    Ok(frame) => match frame {
-                        Some(frame) => {
-                            tracing::debug!(?frame, "received");
-                            return Some(Ok(frame));
-                        }
-                        None => {}
+                    Ok(frame) => if let Some(frame) = frame {
+                        tracing::debug!(?frame, "received");
+                        return Some(Ok(frame));
                     },
-                    Err(e) => return Some(Err(e)),
+                   Err(e) => return Some(Err(e)),
                 }
 
                 // if let Some(frame) = decode_frame(hpack, max_header_list_size, partial, bytes)? {

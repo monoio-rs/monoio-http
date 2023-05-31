@@ -1234,6 +1234,7 @@ where
 
         if !self.read_fut.armed() {
             let io = self.inner_mut();
+            #[allow(clippy::cast_ref_to_mut)]
             let io = unsafe { &mut *(io as *const T as *mut T) };
             self.read_fut.arm_future(io.read_exact(owned_buf));
         }
@@ -1250,7 +1251,7 @@ where
                 ))));
             }
 
-            if &PREFACE[..] != &ret_buf[..] {
+            if PREFACE[..] != ret_buf[..] {
                 println!("!!!!!!!!!!! ReadPreface failed");
                 proto_err!(conn: "read_preface: invalid preface");
                 // TODO: Should this just write the GO_AWAY frame directly?

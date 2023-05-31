@@ -64,8 +64,9 @@ enum Inner {
     Closed(Cause),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 enum Peer {
+    #[default]
     AwaitingHeaders,
     Streaming,
 }
@@ -459,11 +460,5 @@ impl State {
 impl Default for State {
     fn default() -> State {
         State { inner: Inner::Idle }
-    }
-}
-
-impl Default for Peer {
-    fn default() -> Self {
-        AwaitingHeaders
     }
 }

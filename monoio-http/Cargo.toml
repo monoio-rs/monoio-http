@@ -9,8 +9,8 @@ version = "0.1.0"
 
 [dependencies]
 monoio = { version = "0.1.3" }
-monoio-compat = { path = "../../monoio/monoio-compat" }
-monoio-codec = { version = "0.0.4", path = "../../monoio-codec" }
+monoio-compat = { version = "0.1.1" }
+monoio-codec = { version = "0.0.5" }
 bytes = "1"
 http = "0.2"
 httparse = "1"
