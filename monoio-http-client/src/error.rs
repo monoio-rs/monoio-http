@@ -21,6 +21,8 @@ pub enum Error {
     Tls(#[from] monoio_rustls::TlsError),
     #[error("serde_json error {0}")]
     Json(#[from] serde_json::Error),
+    #[error("H2 RecvStream decode error {0}")]
+    H2PayloadError(#[from] monoio_http::h2::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

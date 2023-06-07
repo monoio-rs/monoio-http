@@ -25,6 +25,7 @@ pub enum Payload<D = Bytes, E = PayloadError> {
     None,
     Fixed(FixedPayload<D, E>),
     Stream(StreamPayload<D, E>),
+    H2BodyStream(crate::h2::RecvStream),
 }
 
 pub enum PayloadSender<D, E> {

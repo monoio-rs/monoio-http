@@ -306,6 +306,35 @@ where
                     }
                     self.buf.put_slice(b"0\r\n\r\n");
                 }
+                Payload::H2BodyStream(mut p) => {
+                    // set special header
+                    HeadEncoder::set_length_header(header_map, Length::Chunked);
+                    // encode head to buffer
+                    HeadEncoder
+                        .encode(head, &mut self.buf)
+                        .map_err(Into::into)?;
+
+                    while let Some(data_result) = p.data().await {
+                        let data = data_result.unwrap();
+                        write!(self.buf, "{:X}\r\n", data.len())
+                            .expect("unable to format data length");
+                        if self.buf.len() + data.len() > BACKPRESSURE_BOUNDARY {
+                            // if data to send is too long, we will flush the buffer
+                            // first, and send Bytes directly.
+                            if !self.buf.is_empty() {
+                                Sink::<R>::flush(self).await?;
+                            }
+                            let (r, _) = self.io.write_all(data).await;
+                            r?;
+                        } else {
+                            // the data length is small, we copy it to avoid too many
+                            // syscall.
+                            FixedBodyEncoder.encode(&data, &mut self.buf)?;
+                        }
+                        self.buf.put_slice(b"\r\n");
+                    }
+                    self.buf.put_slice(b"0\r\n\r\n");
+                }
             }
 
             Ok(())
