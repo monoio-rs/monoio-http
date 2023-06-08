@@ -101,6 +101,7 @@ async fn handle_request(req: Request) -> Response {
             }
         },
         Payload::Stream(_) => unimplemented!(),
+        Payload::H2BodyStream(_) => unimplemented!(),
     };
 
     let status = if has_error {

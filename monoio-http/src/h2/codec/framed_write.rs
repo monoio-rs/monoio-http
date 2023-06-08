@@ -399,10 +399,10 @@ impl<T, B> FramedWrite<T, B> {
 
 impl<T: AsyncReadRent + Unpin, B> AsyncReadRent for FramedWrite<T, B> {
     type ReadFuture<'a, E> = impl std::future::Future<Output = monoio::BufResult<usize, E>> + 'a where
-    Self: 'a, 
+    Self: 'a,
     E: IoBufMut + 'a;
     type ReadvFuture<'a, E> = impl std::future::Future<Output = monoio::BufResult<usize, E>> + 'a where
-    Self: 'a, 
+    Self: 'a,
     E: IoVecBufMut + 'a;
 
     fn read<F: IoBufMut>(&mut self, buf: F) -> Self::ReadFuture<'_, F> {

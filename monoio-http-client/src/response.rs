@@ -77,6 +77,14 @@ impl ClientResponse {
                 }
                 Ok(ret.freeze())
             }
+            Payload::H2BodyStream(mut s) => {
+                let mut ret = BytesMut::new();
+                while let Some(payload_result) = s.data().await {
+                    let data = payload_result.unwrap();
+                    ret.extend(data);
+                }
+                Ok(ret.freeze())
+            }
         }
     }
 
@@ -89,10 +97,12 @@ impl ClientResponse {
                     Payload::None => unsafe { unreachable_unchecked() },
                     Payload::Fixed(p) => p,
                     Payload::Stream(_) => unsafe { unreachable_unchecked() },
+                    Payload::H2BodyStream(_) => unsafe { unreachable_unchecked() },
                 };
                 p.get().await.map_err(Into::into).map(Option::Some)
             }
             Payload::Stream(s) => s.next().await.transpose().map_err(Into::into),
+            Payload::H2BodyStream(s) => s.data().await.transpose().map_err(Into::into),
         }
     }
 
