@@ -13,7 +13,7 @@ use monoio_http::h1::{
         decoder::{FillPayload, ResponseDecoder},
         encoder::GenericEncoder,
     },
-    payload::{FixedPayload, Payload},
+    payload::{FixedPayload, Payload, PayloadError},
 };
 use serde::Deserialize;
 
@@ -22,6 +22,7 @@ const TEST_DATA: &str = r#"{"key": "val"}"#;
 #[monoio::main]
 async fn main() {
     let payload: Bytes = TEST_DATA.into();
+    let fixed_payload = FixedPayload::<Bytes, PayloadError>::new(payload);
 
     let request = Builder::new()
         .method(Method::POST)
@@ -30,7 +31,7 @@ async fn main() {
         .header(http::header::HOST, "httpbin.org")
         .header(http::header::ACCEPT, "*/*")
         .header(http::header::USER_AGENT, "monoio-http")
-        .body(Payload::Fixed(FixedPayload::new(payload)))
+        .body(Payload::Fixed(fixed_payload))
         .unwrap();
 
     println!("Request constructed, will connect");
@@ -71,7 +72,7 @@ struct HttpbinResponse {
     url: String,
 }
 
-async fn process_payload(payload: FixedPayload) {
+async fn process_payload(mut payload: FixedPayload) {
     let data = payload.get().await.expect("unable to read response body");
     let resp: HttpbinResponse = serde_json::from_slice(&data).expect("unable to parse json body");
     println!("Response json: {resp:?}");

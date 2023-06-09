@@ -8,10 +8,13 @@ use std::{
 use bytes::{Buf, Bytes};
 use http::HeaderMap;
 
-use crate::h2::{
-    codec::UserError,
-    frame::Reason,
-    proto::{self, WindowSize},
+use crate::{
+    common::body::Body,
+    h2::{
+        codec::UserError,
+        frame::Reason,
+        proto::{self, WindowSize},
+    },
 };
 
 /// Sends the body stream and trailers to the remote peer.
@@ -466,6 +469,22 @@ impl RecvStream {
     /// If the lock on the stream store has been poisoned.
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
+    }
+}
+
+impl Body for RecvStream {
+    type Data = Bytes;
+    type Error = crate::h2::Error;
+    type DataFuture<'a> = impl std::future::Future<Output = Result<Option<Self::Data>, Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn data(&mut self) -> Self::DataFuture<'_> {
+        async move { self.data().await.transpose() }
+    }
+
+    fn stream_hint(&self) -> crate::common::body::StreamHint {
+        crate::common::body::StreamHint::Stream
     }
 }
 

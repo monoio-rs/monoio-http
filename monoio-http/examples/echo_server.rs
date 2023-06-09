@@ -90,7 +90,7 @@ async fn handle_request(req: Request) -> Response {
     let mut has_payload = false;
     let payload = match req.into_body() {
         Payload::None => Payload::None,
-        Payload::Fixed(p) => match p.get().await {
+        Payload::Fixed(mut p) => match p.get().await {
             Ok(data) => {
                 has_payload = true;
                 Payload::Fixed(FixedPayload::new(data))

@@ -68,7 +68,7 @@ impl ClientResponse {
     pub async fn bytes(self) -> crate::Result<Bytes> {
         match self.body {
             Payload::None => Ok(Bytes::new()),
-            Payload::Fixed(p) => p.get().await.map_err(Into::into),
+            Payload::Fixed(mut p) => p.get().await.map_err(Into::into),
             Payload::Stream(mut s) => {
                 let mut ret = BytesMut::new();
                 while let Some(payload_result) = s.next().await {
@@ -93,7 +93,7 @@ impl ClientResponse {
         match &mut self.body {
             Payload::None => Ok(None),
             Payload::Fixed(_) => {
-                let p = match std::mem::replace(&mut self.body, Payload::None) {
+                let mut p = match std::mem::replace(&mut self.body, Payload::None) {
                     Payload::None => unsafe { unreachable_unchecked() },
                     Payload::Fixed(p) => p,
                     Payload::Stream(_) => unsafe { unreachable_unchecked() },

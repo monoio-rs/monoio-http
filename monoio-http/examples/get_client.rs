@@ -1,11 +1,12 @@
 //! Simple HTTP Get example with low level codec.
 //! We use captive.apple.com as target service.
 
+use bytes::Bytes;
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
 use monoio_http::h1::{
     codec::{decoder::FillPayload, ClientCodec},
-    payload::{FixedPayload, Payload},
+    payload::{FixedPayload, Payload, PayloadError},
 };
 
 #[monoio::main]
@@ -17,7 +18,7 @@ async fn main() {
         .header(http::header::HOST, "captive.apple.com")
         .header(http::header::ACCEPT, "*/*")
         .header(http::header::USER_AGENT, "monoio-http")
-        .body(Payload::None)
+        .body(Payload::<Bytes, PayloadError>::None)
         .unwrap();
 
     println!("Request constructed, will connect");
@@ -48,7 +49,7 @@ async fn main() {
     process_payload(payload).await;
 }
 
-async fn process_payload(payload: FixedPayload) {
+async fn process_payload(mut payload: FixedPayload) {
     let data = payload.get().await.expect("unable to read response body");
     println!("Response body: {}", String::from_utf8_lossy(&data));
 }

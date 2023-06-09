@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use bytes::Bytes;
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream, Splitable};
 use monoio_http::h1::{
@@ -10,7 +11,7 @@ use monoio_http::h1::{
         decoder::{FillPayload, ResponseDecoder},
         encoder::GenericEncoder,
     },
-    payload::{stream_payload_pair, FixedPayload, Payload},
+    payload::{stream_payload_pair, FixedPayload, Payload, PayloadError},
 };
 use serde::Deserialize;
 
@@ -19,7 +20,7 @@ const FULL_DATA: &str = r#"{"key": "val"}"#;
 
 #[monoio::main(enable_timer = true)]
 async fn main() {
-    let (payload, mut payload_sender) = stream_payload_pair();
+    let (payload, mut payload_sender) = stream_payload_pair::<Bytes, PayloadError>();
 
     let request = Builder::new()
         .method(Method::POST)
@@ -79,7 +80,7 @@ struct HttpbinResponse {
     url: String,
 }
 
-async fn process_payload(payload: FixedPayload) {
+async fn process_payload(mut payload: FixedPayload) {
     let data = payload.get().await.expect("unable to read response body");
     println!("{:?}", data);
     let resp: HttpbinResponse = serde_json::from_slice(&data).expect("unable to parse json body");
