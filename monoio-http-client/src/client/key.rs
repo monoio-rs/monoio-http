@@ -1,7 +1,7 @@
-use std::{fmt::Display, hash::Hash, net::ToSocketAddrs};
+use std::{hash::Hash, net::ToSocketAddrs};
 
 use http::{uri::Authority, Uri};
-use monoio_http::{Param, ParamMut, ParamRef};
+use service_async::{Param, ParamMut, ParamRef};
 use smol_str::SmolStr;
 use thiserror::Error as ThisError;
 
@@ -23,7 +23,7 @@ impl Clone for Key {
     }
 }
 
-impl Display for Key {
+impl std::fmt::Debug for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.host, self.port)
     }
@@ -133,8 +133,6 @@ impl TryFrom<(Authority, u16)> for Key {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Borrow;
-
     use super::*;
 
     #[test]
@@ -176,7 +174,7 @@ mod tests {
     #[test]
     fn key_uri() {
         let uri = Uri::try_from("https://bytedance.com").unwrap();
-        let key: Key = uri.borrow().try_into().expect("unable to convert to Key");
+        let key: Key = (&uri).try_into().expect("unable to convert to Key");
         assert_eq!(key.port, 443);
         assert_eq!(key.host, "bytedance.com");
         #[cfg(feature = "tls")]

@@ -3,8 +3,9 @@ pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 use crate::{
     common::{FromParts, IntoParts},
     h1::payload::Payload,
-    ParamMut, ParamRef,
 };
+
+use super::BorrowHeaderMap;
 
 pub type Request<P = Payload> = http::request::Request<P>;
 
@@ -22,14 +23,12 @@ impl<P> IntoParts for Request<P> {
     }
 }
 
-impl ParamRef<http::HeaderMap> for RequestHead {
-    fn param_ref(&self) -> &http::HeaderMap {
+impl BorrowHeaderMap for RequestHead {
+    fn header_map(&self) -> &http::HeaderMap {
         &self.headers
     }
-}
 
-impl ParamMut<http::HeaderMap> for RequestHead {
-    fn param_mut(&mut self) -> &mut http::HeaderMap {
+    fn header_map_mut(&mut self) -> &mut http::HeaderMap {
         &mut self.headers
     }
 }

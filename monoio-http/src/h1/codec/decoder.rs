@@ -14,13 +14,12 @@ use crate::{
         ext::Reason,
         request::{Request, RequestHead},
         response::{Response, ResponseHead},
-        FromParts,
+        BorrowHeaderMap, FromParts,
     },
     h1::payload::{
         fixed_payload_pair, stream_payload_pair, FixedPayloadSender, Payload, PayloadError,
         StreamPayloadSender,
     },
-    ParamRef,
 };
 
 const MAX_HEADERS: usize = 96;
@@ -309,7 +308,7 @@ impl<R, D> Decoder for GenericHeadDecoder<R, D>
 where
     D: Decoder<Error = DecodeError>,
     R: FromParts<D::Item, Payload>,
-    D::Item: ParamRef<HeaderMap>,
+    D::Item: BorrowHeaderMap,
 {
     type Item = (R, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>);
     type Error = DecodeError;
@@ -321,9 +320,30 @@ where
             // 1. iter single pass to find out content length and if is chunked
             // 2. validate headers to make sure content length can not be set with chunked encoding
             Ok(Some(head)) => {
-                if let Some(content_length) = head.param_ref().get(http::header::CONTENT_LENGTH) {
-                    let content_length =
-                        unsafe { std::str::from_utf8_unchecked(content_length.as_bytes()) };
+                if let Some(x) = head.header_map().get(http::header::TRANSFER_ENCODING) {
+                    // Check chunked
+                    if super::byte_case_insensitive_cmp(x.as_bytes(), b"chunked") {
+                        let (payload, sender) = stream_payload_pair();
+                        let request = R::from_parts(head, Payload::from(payload));
+                        return Ok(Some((
+                            request,
+                            NextDecoder::Streamed(ChunkedBodyDecoder::default(), sender),
+                        )));
+                    }
+                    // Check not identity
+                    if !super::byte_case_insensitive_cmp(x.as_bytes(), b"identity") {
+                        // The transfer-encoding is illegal!
+                        return Err(DecodeError::Header);
+                    }
+                }
+
+                // Now transfer-encoding is identity.
+                if let Some(content_length) = head.header_map().get(http::header::CONTENT_LENGTH) {
+                    let content_length = match content_length.to_str() {
+                        Ok(c) if c.starts_with('+') => return Err(DecodeError::Header),
+                        Ok(c) => c,
+                        Err(_) => return Err(DecodeError::Header),
+                    };
                     let content_length = match content_length.parse::<usize>() {
                         Ok(c) => c,
                         Err(_) => return Err(DecodeError::Header),
@@ -337,17 +357,6 @@ where
                         return Ok(Some((
                             request,
                             NextDecoder::Fixed(FixedBodyDecoder(content_length), sender),
-                        )));
-                    }
-                }
-                if let Some(x) = head.param_ref().get(http::header::TRANSFER_ENCODING) {
-                    // TODO: only allow chunked and identity and ignore case.
-                    if x.as_bytes() == b"chunked" {
-                        let (payload, sender) = stream_payload_pair();
-                        let request = R::from_parts(head, Payload::from(payload));
-                        return Ok(Some((
-                            request,
-                            NextDecoder::Streamed(ChunkedBodyDecoder::default(), sender),
                         )));
                     }
                 }

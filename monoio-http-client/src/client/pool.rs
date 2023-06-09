@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
     collections::{HashMap, VecDeque},
-    fmt::{Debug, Display},
+    fmt::Debug,
     future::Future,
     hash::Hash,
     ops::{Deref, DerefMut},
@@ -92,7 +92,7 @@ impl<K: Hash + Eq, IO> Clone for ConnectionPool<K, IO> {
 
 pub struct PooledConnection<K, IO>
 where
-    K: Hash + Eq + Display,
+    K: Hash + Eq + Debug,
 {
     // option is for take when drop
     key: Option<K>,
@@ -141,7 +141,7 @@ impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
 
 impl<K, IO> PooledConnection<K, IO>
 where
-    K: Hash + Eq + Display,
+    K: Hash + Eq + Debug,
 {
     pub fn set_reuseable(&mut self, reuseable: bool) {
         self.reuseable = reuseable;
@@ -150,7 +150,7 @@ where
 
 impl<K, IO> Deref for PooledConnection<K, IO>
 where
-    K: Hash + Eq + Display,
+    K: Hash + Eq + Debug,
 {
     type Target = ClientCodec<IO>;
 
@@ -161,7 +161,7 @@ where
 
 impl<K, IO> DerefMut for PooledConnection<K, IO>
 where
-    K: Hash + Eq + Display,
+    K: Hash + Eq + Debug,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.codec.as_mut().expect("connection should be present")
@@ -170,7 +170,7 @@ where
 
 impl<K, IO> Drop for PooledConnection<K, IO>
 where
-    K: Hash + Eq + Display,
+    K: Hash + Eq + Debug,
 {
     fn drop(&mut self) {
         if !self.reuseable {
@@ -189,22 +189,19 @@ where
 
             let conns = unsafe { &mut *pool.get() };
             #[cfg(feature = "logging")]
-            let key_str = key.to_string();
+            let key_debug = format!("{key:?}");
+
             let queue = conns
                 .mapping
                 .entry(key)
                 .or_insert(VecDeque::with_capacity(conns.keepalive_conns));
 
             #[cfg(feature = "logging")]
-            tracing::debug!(
-                "connection pool size: {:?} for key: {:?}",
-                queue.len(),
-                key_str
-            );
+            tracing::debug!("connection pool size: {:?} for key: {key_debug}", queue.len(),);
 
-            if queue.len() > conns.keepalive_conns.into() {
+            if queue.len() > conns.keepalive_conns {
                 #[cfg(feature = "logging")]
-                tracing::info!("connection pool is full for key: {:?}", key_str);
+                tracing::info!("connection pool is full for key: {key_debug}");
                 let _ = queue.pop_front();
             }
 
@@ -218,7 +215,7 @@ where
 
 impl<K, IO> ConnectionPool<K, IO>
 where
-    K: Hash + Eq + ToOwned<Owned = K> + Display,
+    K: Hash + Eq + ToOwned<Owned = K> + Debug,
 {
     pub fn get(&self, key: &K) -> Option<PooledConnection<K, IO>> {
         let conns = unsafe { &mut *self.conns.get() };
@@ -226,7 +223,7 @@ where
         match conns.mapping.get_mut(key) {
             Some(v) => {
                 #[cfg(feature = "logging")]
-                tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
+                tracing::debug!("connection got from pool for key: {key:?}");
                 v.pop_front().map(|idle| PooledConnection {
                     key: Some(key.to_owned()),
                     codec: Some(idle.codec),
@@ -236,7 +233,7 @@ where
             }
             None => {
                 #[cfg(feature = "logging")]
-                tracing::debug!("no connection in pool for key: {:?} ", key.to_string());
+                tracing::debug!("no connection in pool for key: {key:?}");
                 None
             }
         }

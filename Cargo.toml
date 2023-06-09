@@ -1,2 +1,3 @@
 [workspace]
 members = ["monoio-http", "monoio-http-client"]
+resolver = "2"

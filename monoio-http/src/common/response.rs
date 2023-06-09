@@ -1,11 +1,11 @@
 pub use http::response::{Builder as ResponseBuilder, Parts as ResponseHead};
-use http::HeaderMap;
 
 use crate::{
     common::{FromParts, IntoParts},
     h1::payload::Payload,
-    ParamMut, ParamRef,
 };
+
+use super::BorrowHeaderMap;
 
 pub type Response<P = Payload> = http::response::Response<P>;
 
@@ -23,14 +23,12 @@ impl<P> IntoParts for Response<P> {
     }
 }
 
-impl ParamRef<HeaderMap> for ResponseHead {
-    fn param_ref(&self) -> &HeaderMap {
+impl BorrowHeaderMap for ResponseHead {
+    fn header_map(&self) -> &http::HeaderMap {
         &self.headers
     }
-}
 
-impl ParamMut<HeaderMap> for ResponseHead {
-    fn param_mut(&mut self) -> &mut HeaderMap {
+    fn header_map_mut(&mut self) -> &mut http::HeaderMap {
         &mut self.headers
     }
 }

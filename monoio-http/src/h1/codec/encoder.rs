@@ -7,9 +7,10 @@ use monoio_codec::Encoder;
 use thiserror::Error as ThisError;
 
 use crate::{
-    common::{ext::Reason, request::RequestHead, response::ResponseHead, IntoParts},
+    common::{
+        ext::Reason, request::RequestHead, response::ResponseHead, BorrowHeaderMap, IntoParts,
+    },
     h1::payload::{Payload, PayloadError},
-    ParamMut,
 };
 
 const AVERAGE_HEADER_SIZE: usize = 30;
@@ -223,7 +224,7 @@ impl<T, R> Sink<R> for GenericEncoder<T>
 where
     T: AsyncWriteRent,
     R: IntoParts<Body = Payload>,
-    R::Parts: ParamMut<HeaderMap>,
+    R::Parts: BorrowHeaderMap,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
 {
@@ -245,7 +246,7 @@ where
             if self.buf.len() > BACKPRESSURE_BOUNDARY {
                 Sink::<R>::flush(self).await?;
             }
-            let header_map = head.param_mut();
+            let header_map = head.header_map_mut();
             match payload {
                 Payload::None => {
                     // set special header
