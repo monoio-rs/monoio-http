@@ -1,4 +1,4 @@
-use std::{hash::Hash, net::ToSocketAddrs};
+use std::{convert::Infallible, hash::Hash, net::ToSocketAddrs};
 
 use http::{uri::Authority, Uri};
 use service_async::{Param, ParamMut, ParamRef};
@@ -8,8 +8,10 @@ use thiserror::Error as ThisError;
 pub struct Key {
     host: SmolStr,
     port: u16,
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "rustls")]
     server_name: rustls::ServerName,
+    #[cfg(feature = "native-tls")]
+    server_name: String,
 }
 
 impl Clone for Key {
@@ -17,7 +19,7 @@ impl Clone for Key {
         Self {
             host: self.host.clone(),
             port: self.port,
-            #[cfg(feature = "tls")]
+            #[cfg(any(feature = "rustls", feature = "native-tls"))]
             server_name: self.server_name.clone(),
         }
     }
@@ -52,36 +54,63 @@ impl ToSocketAddrs for Key {
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "rustls")]
 impl Param<rustls::ServerName> for Key {
     fn param(&self) -> rustls::ServerName {
         self.server_name.clone()
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "rustls")]
 impl ParamRef<rustls::ServerName> for Key {
     fn param_ref(&self) -> &rustls::ServerName {
         &self.server_name
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "rustls")]
 impl ParamMut<rustls::ServerName> for Key {
     fn param_mut(&mut self) -> &mut rustls::ServerName {
         &mut self.server_name
     }
 }
 
+#[cfg(feature = "native-tls")]
+impl Param<String> for Key {
+    fn param(&self) -> String {
+        self.server_name.clone()
+    }
+}
+
+#[cfg(feature = "native-tls")]
+impl ParamRef<String> for Key {
+    fn param_ref(&self) -> &String {
+        &self.server_name
+    }
+}
+
+#[cfg(feature = "native-tls")]
+impl ParamMut<String> for Key {
+    fn param_mut(&mut self) -> &mut String {
+        &mut self.server_name
+    }
+}
+
 #[derive(ThisError, Debug)]
 pub enum FromUriError {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "rustls")]
     #[error("invalid dns name")]
     InvalidDnsName(#[from] rustls::client::InvalidDnsNameError),
     #[error("scheme not support")]
     UnsupportScheme,
     #[error("no authority in uri")]
     NoAuthority,
+}
+
+impl From<Infallible> for FromUriError {
+    fn from(_: Infallible) -> Self {
+        unsafe { std::hint::unreachable_unchecked() }
+    }
 }
 
 impl TryFrom<&Uri> for Key {
@@ -102,21 +131,24 @@ impl TryFrom<&Uri> for Key {
 }
 
 impl TryFrom<(&Authority, u16)> for Key {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "rustls")]
     type Error = rustls::client::InvalidDnsNameError;
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(feature = "rustls"))]
     type Error = std::convert::Infallible;
 
     fn try_from(a: (&Authority, u16)) -> Result<Self, Self::Error> {
         let (authority, default_port) = a;
         let host = authority.host();
         let port = authority.port_u16().unwrap_or(default_port);
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "rustls")]
         let server_name = rustls::ServerName::try_from(host)?;
+        #[cfg(feature = "native-tls")]
+        let server_name = host.to_string();
+
         Ok(Self {
             host: host.into(),
             port,
-            #[cfg(feature = "tls")]
+            #[cfg(any(feature = "rustls", feature = "native-tls"))]
             server_name,
         })
     }
@@ -143,8 +175,10 @@ mod tests {
             .expect("unable to convert to Key");
         assert_eq!(key.port, 80);
         assert_eq!(key.host, "bytedance.com");
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
+        #[cfg(feature = "native-tls")]
+        assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 
     #[test]
@@ -155,8 +189,10 @@ mod tests {
             .expect("unable to convert to Key");
         assert_eq!(key.port, 12345);
         assert_eq!(key.host, "bytedance.com");
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
+        #[cfg(feature = "native-tls")]
+        assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 
     #[test]
@@ -167,8 +203,10 @@ mod tests {
             .expect("unable to convert to Key");
         assert_eq!(key.port, 443);
         assert_eq!(key.host, "1.1.1.1");
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "1.1.1.1".try_into().unwrap());
+        #[cfg(feature = "native-tls")]
+        assert_eq!(key.server_name, "1.1.1.1".to_string());
     }
 
     #[test]
@@ -177,7 +215,9 @@ mod tests {
         let key: Key = (&uri).try_into().expect("unable to convert to Key");
         assert_eq!(key.port, 443);
         assert_eq!(key.host, "bytedance.com");
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
+        #[cfg(feature = "native-tls")]
+        assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 }

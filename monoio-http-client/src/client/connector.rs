@@ -2,15 +2,17 @@ use std::{fmt::Debug, future::Future, hash::Hash, io, net::ToSocketAddrs};
 
 use monoio::net::TcpStream;
 use monoio_http::h1::codec::ClientCodec;
-use rustls::client::ServerCertVerifier;
-use service_async::Param;
 
 use super::pool::{ConnectionPool, PooledConnection};
 
+#[cfg(feature = "rustls")]
 pub type TlsStream = monoio_rustls::ClientTlsStream<TcpStream>;
 
+#[cfg(feature = "native-tls")]
+pub type TlsStream = monoio_native_tls::TlsStream<TcpStream>;
+
 pub type DefaultTcpConnector<T> = PooledConnector<TcpConnector, T, TcpStream>;
-#[cfg(feature = "tls")]
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
 pub type DefaultTlsConnector<T> = PooledConnector<TlsConnector, T, TlsStream>;
 
 pub trait Connector<K> {
@@ -39,31 +41,19 @@ where
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
 #[derive(Clone)]
 pub struct TlsConnector {
     tcp_connector: TcpConnector,
+    #[cfg(feature = "rustls")]
     tls_connector: monoio_rustls::TlsConnector,
+    #[cfg(feature = "native-tls")]
+    tls_connector: monoio_native_tls::TlsConnector,
 }
 
-struct IgnoreCertVerifier;
-
-impl ServerCertVerifier for IgnoreCertVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
-    }
-}
-
-#[cfg(feature = "tls")]
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
 impl Default for TlsConnector {
+    #[cfg(feature = "rustls")]
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
@@ -84,22 +74,49 @@ impl Default for TlsConnector {
             tls_connector: cfg.into(),
         }
     }
+
+    #[cfg(feature = "native-tls")]
+    fn default() -> Self {
+        Self {
+            tcp_connector: TcpConnector,
+            tls_connector: native_tls::TlsConnector::builder().build().unwrap().into(),
+        }
+    }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "rustls")]
 impl<T> Connector<T> for TlsConnector
 where
-    T: ToSocketAddrs + Param<rustls::ServerName>,
+    T: ToSocketAddrs + service_async::Param<rustls::ServerName>,
 {
     type Connection = TlsStream;
     type Error = monoio_rustls::TlsError;
     type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
+        let server_name = key.param();
         async move {
-            let server_name = key.param();
             let stream = self.tcp_connector.connect(key).await?;
             let tls_stream = self.tls_connector.connect(server_name, stream).await?;
+            Ok(tls_stream)
+        }
+    }
+}
+
+#[cfg(feature = "native-tls")]
+impl<T> Connector<T> for TlsConnector
+where
+    T: ToSocketAddrs + service_async::Param<String>,
+{
+    type Connection = TlsStream;
+    type Error = monoio_native_tls::TlsError;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
+
+    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
+        let server_name = key.param();
+        async move {
+            let stream = self.tcp_connector.connect(key).await?;
+            let tls_stream = self.tls_connector.connect(&server_name, stream).await?;
             Ok(tls_stream)
         }
     }

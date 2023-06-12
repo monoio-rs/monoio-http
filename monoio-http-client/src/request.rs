@@ -2,15 +2,41 @@ use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
 use monoio_http::h1::payload::{fixed_payload_pair, Payload};
 
-use crate::{client::Client, response::ClientResponse};
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+use crate::client::connector::DefaultTlsConnector;
+use crate::{
+    client::{connector::DefaultTcpConnector, key::Key, Client},
+    response::ClientResponse,
+};
 
-pub struct ClientRequest {
-    client: Client,
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+pub struct ClientRequest<C = DefaultTcpConnector<Key>, CS = DefaultTlsConnector<Key>> {
+    client: Client<C, CS>,
     builder: Builder,
 }
 
-impl ClientRequest {
-    pub fn new(client: Client) -> Self {
+#[cfg(not(any(feature = "rustls", feature = "native-tls")))]
+pub struct ClientRequest<C = DefaultTcpConnector<Key>> {
+    client: Client<C>,
+    builder: Builder,
+}
+
+macro_rules! client_request_impl {
+    ( $( $x:item )* ) => {
+        #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
+        impl<C> ClientRequest<C> {
+            $($x)*
+        }
+
+        #[cfg(any(feature = "rustls", feature = "native-tls"))]
+        impl<C, CS> ClientRequest<C, CS> {
+            $($x)*
+        }
+    };
+}
+
+client_request_impl! {
+    pub fn new(client: Client<C, CS>) -> Self {
         Self {
             client,
             builder: Builder::new(),
@@ -46,6 +72,20 @@ impl ClientRequest {
         self
     }
 
+    fn build_request(builder: Builder, body: Payload) -> crate::Result<http::Request<Payload>> {
+        let mut req = builder.version(http::Version::HTTP_11).body(body)?;
+        if let Some(host) = req.uri().host() {
+            let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
+            let headers = req.headers_mut();
+            if !headers.contains_key(http::header::HOST) {
+                headers.insert(http::header::HOST, host);
+            }
+        }
+        Ok(req)
+    }
+}
+
+impl ClientRequest {
     pub async fn send(self) -> crate::Result<ClientResponse> {
         let request = Self::build_request(self.builder, Payload::None)?;
         let resp = self.client.send(request).await?;
@@ -71,17 +111,5 @@ impl ClientRequest {
         let request = Self::build_request(builder, Payload::Fixed(payload))?;
         let resp = self.client.send(request).await?;
         Ok(ClientResponse::new(resp))
-    }
-
-    fn build_request(builder: Builder, body: Payload) -> crate::Result<http::Request<Payload>> {
-        let mut req = builder.version(http::Version::HTTP_11).body(body)?;
-        if let Some(host) = req.uri().host() {
-            let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
-            let headers = req.headers_mut();
-            if !headers.contains_key(http::header::HOST) {
-                headers.insert(http::header::HOST, host);
-            }
-        }
-        Ok(req)
     }
 }

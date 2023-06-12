@@ -197,7 +197,10 @@ where
                 .or_insert(VecDeque::with_capacity(conns.keepalive_conns));
 
             #[cfg(feature = "logging")]
-            tracing::debug!("connection pool size: {:?} for key: {key_debug}", queue.len(),);
+            tracing::debug!(
+                "connection pool size: {:?} for key: {key_debug}",
+                queue.len(),
+            );
 
             if queue.len() > conns.keepalive_conns {
                 #[cfg(feature = "logging")]

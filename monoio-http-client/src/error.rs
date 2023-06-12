@@ -12,13 +12,14 @@ pub enum Error {
     Decode(#[from] monoio_http::h1::codec::decoder::DecodeError),
     #[error("receive body error {0}")]
     Payload(#[from] monoio_http::h1::payload::PayloadError),
-
     #[error("io error {0}")]
     Io(#[from] std::io::Error),
-
-    #[cfg(feature = "tls")]
-    #[error("tls error {0}")]
-    Tls(#[from] monoio_rustls::TlsError),
+    #[cfg(feature = "rustls")]
+    #[error("rustls error {0}")]
+    Rustls(#[from] monoio_rustls::TlsError),
+    #[cfg(feature = "native-tls")]
+    #[error("native-tls error {0}")]
+    NativeTls(#[from] monoio_native_tls::TlsError),
     #[error("serde_json error {0}")]
     Json(#[from] serde_json::Error),
     #[error("H2 RecvStream decode error {0}")]
