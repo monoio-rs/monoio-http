@@ -13,6 +13,7 @@ use std::{
 #[cfg(feature = "time")]
 const DEFAULT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_KEEPALIVE_CONNS: usize = 256;
+const DEFAULT_POOL_SIZE: usize = 32;
 // https://datatracker.ietf.org/doc/html/rfc6335
 const MAX_KEEPALIVE_CONNS: usize = 16384;
 
@@ -28,40 +29,36 @@ struct IdleCodec<IO> {
 
 struct SharedInner<K, IO> {
     mapping: HashMap<K, VecDeque<IdleCodec<IO>>>,
-    keepalive_conns: usize,
+    max_idle: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
 impl<K, IO> SharedInner<K, IO> {
     #[cfg(feature = "time")]
-    fn new(
-        keepalive_conns: usize,
-        upstream_count: usize,
-    ) -> (local_sync::oneshot::Sender<()>, Self) {
-        let mapping = HashMap::with_capacity(upstream_count);
-        let mut keepalive_conns = keepalive_conns % MAX_KEEPALIVE_CONNS;
-        if keepalive_conns < DEFAULT_KEEPALIVE_CONNS {
-            keepalive_conns = DEFAULT_KEEPALIVE_CONNS;
-        }
+    fn new(max_idle: Option<usize>) -> (local_sync::oneshot::Sender<()>, Self) {
+        let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
+        let max_idle = max_idle
+            .map(|n| n.min(MAX_KEEPALIVE_CONNS))
+            .unwrap_or(DEFAULT_KEEPALIVE_CONNS);
+
         let (tx, _drop) = local_sync::oneshot::channel();
         (
             tx,
             Self {
                 mapping,
                 _drop,
-                keepalive_conns,
+                max_idle,
             },
         )
     }
 
     #[cfg(not(feature = "time"))]
-    fn new(keepalive_conns: usize, upstream_count: usize) -> Self {
-        let mapping = HashMap::with_capacity(upstream_count);
-        let mut keepalive_conns = keepalive_conns % MAX_KEEPALIVE_CONNS;
-        if keepalive_conns < DEFAULT_KEEPALIVE_CONNS {
-            keepalive_conns = DEFAULT_KEEPALIVE_CONNS;
-        }
+    fn new(max_idle: Option<usize>) -> Self {
+        let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
+        let max_idle = max_idle
+            .map(|n| n.min(MAX_KEEPALIVE_CONNS))
+            .unwrap_or(DEFAULT_KEEPALIVE_CONNS);
         Self {
             mapping,
             keepalive_conns,
@@ -105,9 +102,8 @@ where
 
 impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
-    fn new(idle_interval: Option<Duration>, keepalive_conns: usize) -> Self {
-        // TODO: update upstream count to a relevant number instead of the magic number.
-        let (tx, inner) = SharedInner::new(keepalive_conns, 32);
+    fn new(idle_interval: Option<Duration>, max_idle: Option<usize>) -> Self {
+        let (tx, inner) = SharedInner::new(max_idle);
         let conns = Rc::new(UnsafeCell::new(inner));
         let idle_interval = idle_interval.unwrap_or(DEFAULT_IDLE_INTERVAL);
         monoio::spawn(IdleTask {
@@ -121,8 +117,8 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
     }
 
     #[cfg(not(feature = "time"))]
-    fn new(keepalive_conns: usize) -> Self {
-        let conns = Rc::new(UnsafeCell::new(SharedInner::new(keepalive_conns, 32)));
+    fn new(max_idle: Option<usize>) -> Self {
+        let conns = Rc::new(UnsafeCell::new(SharedInner::new(max_idle)));
         Self { conns }
     }
 }
@@ -130,12 +126,12 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
 impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn default() -> Self {
-        Self::new(None, DEFAULT_KEEPALIVE_CONNS)
+        Self::new(None, None)
     }
 
     #[cfg(not(feature = "time"))]
     fn default() -> Self {
-        Self::new(DEFAULT_KEEPALIVE_CONNS)
+        Self::new(None)
     }
 }
 
@@ -194,7 +190,7 @@ where
             let queue = conns
                 .mapping
                 .entry(key)
-                .or_insert(VecDeque::with_capacity(conns.keepalive_conns));
+                .or_insert(VecDeque::with_capacity(conns.max_idle));
 
             #[cfg(feature = "logging")]
             tracing::debug!(
@@ -202,7 +198,7 @@ where
                 queue.len(),
             );
 
-            if queue.len() > conns.keepalive_conns {
+            if queue.len() > conns.max_idle {
                 #[cfg(feature = "logging")]
                 tracing::info!("connection pool is full for key: {key_debug}");
                 let _ = queue.pop_front();
