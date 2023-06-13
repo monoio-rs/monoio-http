@@ -1,11 +1,10 @@
 pub use http::response::{Builder as ResponseBuilder, Parts as ResponseHead};
 
+use super::BorrowHeaderMap;
 use crate::{
     common::{FromParts, IntoParts},
     h1::payload::Payload,
 };
-
-use super::BorrowHeaderMap;
 
 pub type Response<P = Payload> = http::response::Response<P>;
 

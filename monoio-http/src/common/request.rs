@@ -1,11 +1,10 @@
 pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 
+use super::BorrowHeaderMap;
 use crate::{
     common::{FromParts, IntoParts},
     h1::payload::Payload,
 };
-
-use super::BorrowHeaderMap;
 
 pub type Request<P = Payload> = http::request::Request<P>;
 

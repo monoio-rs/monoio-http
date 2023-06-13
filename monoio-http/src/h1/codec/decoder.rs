@@ -322,7 +322,7 @@ where
             Ok(Some(head)) => {
                 if let Some(x) = head.header_map().get(http::header::TRANSFER_ENCODING) {
                     // Check chunked
-                    if super::byte_case_insensitive_cmp(x.as_bytes(), b"chunked") {
+                    if x.as_bytes().eq_ignore_ascii_case(b"chunked") {
                         let (payload, sender) = stream_payload_pair();
                         let request = R::from_parts(head, Payload::from(payload));
                         return Ok(Some((
@@ -331,7 +331,7 @@ where
                         )));
                     }
                     // Check not identity
-                    if !super::byte_case_insensitive_cmp(x.as_bytes(), b"identity") {
+                    if !x.as_bytes().eq_ignore_ascii_case(b"identity") {
                         // The transfer-encoding is illegal!
                         return Err(DecodeError::Header);
                     }
