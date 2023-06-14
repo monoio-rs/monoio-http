@@ -706,7 +706,7 @@ mod tests {
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.method(), Method::POST);
         assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
-        let payload = match req.into_body() {
+        let mut payload = match req.into_body() {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };
@@ -723,7 +723,7 @@ mod tests {
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.status(), StatusCode::OK);
         assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
-        let payload = match req.into_body() {
+        let mut payload = match req.into_body() {
             Payload::Fixed(p) => p,
             _ => panic!("wrong payload type"),
         };

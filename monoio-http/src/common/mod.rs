@@ -1,5 +1,6 @@
 use bytes::Bytes;
 
+pub mod body;
 pub mod ext;
 pub mod request;
 pub mod response;

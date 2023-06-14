@@ -8,8 +8,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use monoio::{io::stream::Stream, macros::support::poll_fn};
+use monoio::{buf::IoBuf, io::stream::Stream, macros::support::poll_fn};
 use thiserror::Error as ThisError;
+
+use crate::common::body::{Body, StreamHint};
 
 #[derive(ThisError, Debug)]
 pub enum PayloadError {
@@ -21,11 +23,51 @@ pub enum PayloadError {
     Io(#[from] io::Error),
 }
 
-pub enum Payload<D = Bytes, E = PayloadError> {
+pub enum Payload<D = Bytes, E = PayloadError>
+where
+    D: IoBuf,
+{
     None,
     Fixed(FixedPayload<D, E>),
     Stream(StreamPayload<D, E>),
     H2BodyStream(crate::h2::RecvStream),
+}
+
+impl<D: IoBuf, E> Body for Payload<D, E> {
+    type Data = D;
+    type Error = E;
+
+    type DataFuture<'a> = impl std::future::Future<Output = Result<Option<D>, E>> + 'a
+    where
+        Self: 'a;
+
+    fn data(&mut self) -> Self::DataFuture<'_> {
+        async move {
+            match self {
+                Payload::None => {
+                    // set special header
+                    Ok(None)
+                }
+                Payload::Fixed(p) => {
+                    // get data(to set content length and body)
+                    p.get().await.map(|d| Some(d))
+                }
+                Payload::Stream(p) => p.next().await.transpose(),
+                Payload::H2BodyStream(_) => {
+                    unreachable!()
+                }
+            }
+        }
+    }
+
+    fn stream_hint(&self) -> crate::common::body::StreamHint {
+        match self {
+            Payload::None => StreamHint::None,
+            Payload::Fixed(_) => StreamHint::Fixed,
+            Payload::Stream(_) => StreamHint::Stream,
+            Payload::H2BodyStream(_) => unreachable!(),
+        }
+    }
 }
 
 pub enum PayloadSender<D, E> {
@@ -46,19 +88,19 @@ impl<D, E> From<StreamPayloadSender<D, E>> for PayloadSender<D, E> {
     }
 }
 
-impl<D, E> From<FixedPayload<D, E>> for Payload<D, E> {
+impl<D: IoBuf, E> From<FixedPayload<D, E>> for Payload<D, E> {
     fn from(inner: FixedPayload<D, E>) -> Self {
         Self::Fixed(inner)
     }
 }
 
-impl<D, E> From<StreamPayload<D, E>> for Payload<D, E> {
+impl<D: IoBuf, E> From<StreamPayload<D, E>> for Payload<D, E> {
     fn from(inner: StreamPayload<D, E>) -> Self {
         Self::Stream(inner)
     }
 }
 
-pub fn fixed_payload_pair<D, E>() -> (FixedPayload<D, E>, FixedPayloadSender<D, E>) {
+pub fn fixed_payload_pair<D: IoBuf, E>() -> (FixedPayload<D, E>, FixedPayloadSender<D, E>) {
     let inner = Rc::new(UnsafeCell::new(FixedInner::default()));
     let sender = FixedPayloadSender {
         inner: Rc::downgrade(&inner),
@@ -66,7 +108,7 @@ pub fn fixed_payload_pair<D, E>() -> (FixedPayload<D, E>, FixedPayloadSender<D, 
     (FixedPayload { inner }, sender)
 }
 
-pub fn stream_payload_pair<D, E>() -> (StreamPayload<D, E>, StreamPayloadSender<D, E>) {
+pub fn stream_payload_pair<D: IoBuf, E>() -> (StreamPayload<D, E>, StreamPayloadSender<D, E>) {
     let inner = Rc::new(UnsafeCell::new(StreamInner::default()));
     let sender = StreamPayloadSender {
         inner: Rc::downgrade(&inner),
@@ -76,7 +118,10 @@ pub fn stream_payload_pair<D, E>() -> (StreamPayload<D, E>, StreamPayloadSender<
 
 /// Fixed Payload
 #[derive(Debug)]
-pub struct FixedPayload<D = Bytes, E = PayloadError> {
+pub struct FixedPayload<D = Bytes, E = PayloadError>
+where
+    D: IoBuf,
+{
     inner: Rc<UnsafeCell<FixedInner<D, E>>>,
 }
 
@@ -108,7 +153,7 @@ impl<D, E> FixedInner<D, E> {
     }
 }
 
-impl<D, E> FixedPayload<D, E> {
+impl<D: IoBuf, E> FixedPayload<D, E> {
     pub fn new(data: D) -> Self {
         Self {
             inner: Rc::new(UnsafeCell::new(FixedInner {
@@ -118,7 +163,7 @@ impl<D, E> FixedPayload<D, E> {
         }
     }
 
-    pub async fn get(self) -> Result<D, E> {
+    pub async fn get(&mut self) -> Result<D, E> {
         loop {
             let inner = unsafe { &mut *self.inner.get() };
             if let Some(item) = inner.item.take() {
@@ -152,7 +197,10 @@ impl<D, E> FixedPayloadSender<D, E> {
 
 /// Stream Payload
 #[derive(Debug)]
-pub struct StreamPayload<D = Bytes, E = PayloadError> {
+pub struct StreamPayload<D = Bytes, E = PayloadError>
+where
+    D: IoBuf,
+{
     inner: Rc<UnsafeCell<StreamInner<D, E>>>,
 }
 
@@ -186,7 +234,7 @@ impl<D, E> StreamInner<D, E> {
     }
 }
 
-impl<D, E> Stream for StreamPayload<D, E> {
+impl<D: IoBuf, E> Stream for StreamPayload<D, E> {
     type Item = Result<D, E>;
 
     type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
@@ -273,14 +321,14 @@ mod tests {
 
     #[monoio::test_all(enable_timer = true)]
     async fn fixed_payload() {
-        let (payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
+        let (mut payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
         monoio::spawn(async move {
             monoio::time::sleep(Duration::from_millis(2)).await;
             payload_sender.feed(Ok(Bytes::from_static(b"Hello")));
         });
         assert_eq!(payload.get().await.unwrap(), Bytes::from_static(b"Hello"));
 
-        let (payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
+        let (mut payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
         payload_sender.feed(Ok(Bytes::from_static(b"World")));
         assert_eq!(payload.get().await.unwrap(), Bytes::from_static(b"World"));
     }
