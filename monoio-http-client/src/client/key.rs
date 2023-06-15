@@ -10,7 +10,7 @@ pub struct Key {
     port: u16,
     #[cfg(feature = "rustls")]
     server_name: rustls::ServerName,
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     server_name: String,
 }
 
@@ -75,21 +75,21 @@ impl ParamMut<rustls::ServerName> for Key {
     }
 }
 
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 impl Param<String> for Key {
     fn param(&self) -> String {
         self.server_name.clone()
     }
 }
 
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 impl ParamRef<String> for Key {
     fn param_ref(&self) -> &String {
         &self.server_name
     }
 }
 
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 impl ParamMut<String> for Key {
     fn param_mut(&mut self) -> &mut String {
         &mut self.server_name
@@ -142,7 +142,7 @@ impl TryFrom<(&Authority, u16)> for Key {
         let port = authority.port_u16().unwrap_or(default_port);
         #[cfg(feature = "rustls")]
         let server_name = rustls::ServerName::try_from(host)?;
-        #[cfg(feature = "native-tls")]
+        #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
         let server_name = host.to_string();
 
         Ok(Self {
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(key.host, "bytedance.com");
         #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
-        #[cfg(feature = "native-tls")]
+        #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
         assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(key.host, "bytedance.com");
         #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
-        #[cfg(feature = "native-tls")]
+        #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
         assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(key.host, "1.1.1.1");
         #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "1.1.1.1".try_into().unwrap());
-        #[cfg(feature = "native-tls")]
+        #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
         assert_eq!(key.server_name, "1.1.1.1".to_string());
     }
 
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(key.host, "bytedance.com");
         #[cfg(feature = "rustls")]
         assert_eq!(key.server_name, "bytedance.com".try_into().unwrap());
-        #[cfg(feature = "native-tls")]
+        #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
         assert_eq!(key.server_name, "bytedance.com".to_string());
     }
 }

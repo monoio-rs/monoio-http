@@ -8,7 +8,7 @@ use super::pool::{ConnectionPool, PooledConnection};
 #[cfg(feature = "rustls")]
 pub type TlsStream = monoio_rustls::ClientTlsStream<TcpStream>;
 
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 pub type TlsStream = monoio_native_tls::TlsStream<TcpStream>;
 
 pub type DefaultTcpConnector<T> = PooledConnector<TcpConnector, T, TcpStream>;
@@ -47,7 +47,7 @@ pub struct TlsConnector {
     tcp_connector: TcpConnector,
     #[cfg(feature = "rustls")]
     tls_connector: monoio_rustls::TlsConnector,
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     tls_connector: monoio_native_tls::TlsConnector,
 }
 
@@ -75,7 +75,7 @@ impl Default for TlsConnector {
         }
     }
 
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     fn default() -> Self {
         Self {
             tcp_connector: TcpConnector,
@@ -103,7 +103,7 @@ where
     }
 }
 
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 impl<T> Connector<T> for TlsConnector
 where
     T: ToSocketAddrs + service_async::Param<String>,
