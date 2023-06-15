@@ -1,20 +1,22 @@
-use monoio::io::{sink::Sink, stream::Stream};
+use monoio::io::{
+    sink::Sink, stream::Stream, AsyncReadRent, AsyncWriteRent, OwnedReadHalf, OwnedWriteHalf,
+    Split, Splitable,
+};
 
 use super::{
     decoder::{FillPayload, RequestDecoder},
     encoder::GenericEncoder,
 };
-use crate::util::split::{split, OwnedReadHalf, OwnedWriteHalf};
 
-pub struct ServerCodec<IO> {
+pub struct ServerCodec<IO: AsyncWriteRent> {
     encoder: GenericEncoder<OwnedWriteHalf<IO>>,
     decoder: RequestDecoder<OwnedReadHalf<IO>>,
 }
 
-impl<IO> ServerCodec<IO> {
+impl<IO: Split + AsyncReadRent + AsyncWriteRent> ServerCodec<IO> {
     pub fn new(io: IO) -> Self {
         // # Safety: Since we will not use the encoder and decoder at once, we can split it safely.
-        let (r, w) = unsafe { split(io) };
+        let (r, w) = io.into_split();
         Self {
             encoder: GenericEncoder::new(w),
             decoder: RequestDecoder::new(r),
@@ -22,7 +24,7 @@ impl<IO> ServerCodec<IO> {
     }
 }
 
-impl<IO, R> Sink<R> for ServerCodec<IO>
+impl<IO: AsyncWriteRent, R> Sink<R> for ServerCodec<IO>
 where
     GenericEncoder<OwnedWriteHalf<IO>>: Sink<R>,
 {
@@ -56,7 +58,7 @@ where
     }
 }
 
-impl<IO> FillPayload for ServerCodec<IO>
+impl<IO: AsyncWriteRent> FillPayload for ServerCodec<IO>
 where
     RequestDecoder<OwnedReadHalf<IO>>: FillPayload,
 {
@@ -71,7 +73,7 @@ where
     }
 }
 
-impl<IO> Stream for ServerCodec<IO>
+impl<IO: AsyncWriteRent> Stream for ServerCodec<IO>
 where
     RequestDecoder<OwnedReadHalf<IO>>: Stream,
 {

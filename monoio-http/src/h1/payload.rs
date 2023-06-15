@@ -3,15 +3,24 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     io,
+    pin::Pin,
     rc::{Rc, Weak},
     task::Waker,
 };
 
 use bytes::Bytes;
-use monoio::{buf::IoBuf, io::stream::Stream, macros::support::poll_fn};
+use monoio::{
+    buf::IoBuf,
+    io::{stream::Stream, AsyncReadRent},
+    macros::support::poll_fn,
+};
 use thiserror::Error as ThisError;
 
-use crate::common::body::{Body, StreamHint};
+use super::{
+    codec::decoder::{ChunkedBodyDecoder, DecodeError, FixedBodyDecoder, PayloadDecoder},
+    BorrowFramedRead,
+};
+use crate::common::body::{Body, OwnedBody, StreamHint};
 
 #[derive(ThisError, Debug)]
 pub enum PayloadError {
@@ -292,6 +301,115 @@ impl<D, E> StreamPayloadSender<D, E> {
             inner.items.push_back(Err(err));
             inner.wake();
         }
+    }
+}
+
+/// Payload with io and codec, mainly used by client.
+pub struct FramedPayload<T> {
+    // The io provider.
+    // Normally ClientCodec. Since we may want to reuse it later,
+    // so we may require it to provide something we can do read.
+    io_source: T,
+    payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
+    eof: bool,
+}
+
+impl<T> FramedPayload<T> {
+    pub fn new(
+        io_source: T,
+        payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
+    ) -> Self {
+        Self {
+            io_source,
+            payload_decoder,
+            eof: false,
+        }
+    }
+}
+
+impl<T> Body for FramedPayload<T>
+where
+    T: BorrowFramedRead,
+    T::IO: AsyncReadRent,
+{
+    type Data = Bytes;
+    type Error = DecodeError;
+    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
+    where
+        Self: 'a;
+
+    fn next_data(&mut self) -> Self::DataFuture<'_> {
+        async move {
+            if self.eof {
+                return None;
+            }
+            // The logic here is alike with GenericDecoder's Fillpayload
+            match &mut self.payload_decoder {
+                PayloadDecoder::None => None,
+                PayloadDecoder::Fixed(decoder) => {
+                    self.eof = true;
+                    match self.io_source.framed_mut().next_with(decoder).await {
+                        None => Some(Err(DecodeError::UnexpectedEof)),
+                        Some(Ok(item)) => Some(Ok(item)),
+                        Some(Err(e)) => Some(Err(e)),
+                    }
+                }
+                PayloadDecoder::Streamed(decoder) => {
+                    match self.io_source.framed_mut().next_with(decoder).await {
+                        None => Some(Err(DecodeError::UnexpectedEof)),
+                        Some(Ok(Some(item))) => Some(Ok(item)),
+                        Some(Ok(None)) => {
+                            self.eof = true;
+                            None
+                        }
+                        Some(Err(e)) => Some(Err(e)),
+                    }
+                }
+            }
+        }
+    }
+
+    fn stream_hint(&self) -> StreamHint {
+        self.payload_decoder.hint()
+    }
+}
+
+pub struct BoxedFramedPayload {
+    stream: Pin<Box<dyn futures_core::Stream<Item = Result<Bytes, DecodeError>>>>,
+    hint: StreamHint,
+}
+
+impl<T> FramedPayload<T>
+where
+    T: BorrowFramedRead + 'static,
+    T::IO: AsyncReadRent,
+{
+    pub fn into_boxed(mut self) -> BoxedFramedPayload {
+        let hint = self.stream_hint();
+        BoxedFramedPayload {
+            stream: Box::pin(async_stream::stream! {
+                while let Some(r) = self.next_data().await {
+                    yield r;
+                }
+            }),
+            hint,
+        }
+    }
+}
+
+impl OwnedBody for BoxedFramedPayload {
+    type Data = Bytes;
+    type Error = DecodeError;
+
+    fn poll_next_data(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Self::Data, Self::Error>>> {
+        self.get_mut().stream.as_mut().poll_next(cx)
+    }
+
+    fn stream_hint(&self) -> StreamHint {
+        self.hint
     }
 }
 

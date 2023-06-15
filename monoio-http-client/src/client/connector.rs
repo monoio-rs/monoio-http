@@ -1,6 +1,9 @@
 use std::{fmt::Debug, future::Future, hash::Hash, io, net::ToSocketAddrs};
 
-use monoio::net::TcpStream;
+use monoio::{
+    io::{AsyncReadRent, AsyncWriteRent, Split},
+    net::TcpStream,
+};
 use monoio_http::h1::codec::ClientCodec;
 
 use super::pool::{ConnectionPool, PooledConnection};
@@ -125,12 +128,12 @@ where
 /// PooledConnector does 2 things:
 /// 1. pool
 /// 2. combine connection with codec(of cause with buffer)
-pub struct PooledConnector<C, K: Hash + Eq, IO> {
+pub struct PooledConnector<C, K: Hash + Eq, IO: AsyncWriteRent> {
     inner: C,
     pool: ConnectionPool<K, IO>,
 }
 
-impl<C, K: Hash + Eq, IO> Clone for PooledConnector<C, K, IO>
+impl<C, K: Hash + Eq, IO: AsyncWriteRent> Clone for PooledConnector<C, K, IO>
 where
     C: Clone,
 {
@@ -142,7 +145,7 @@ where
     }
 }
 
-impl<C, K: Hash + Eq + 'static, IO: 'static> Default for PooledConnector<C, K, IO>
+impl<C, K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> Default for PooledConnector<C, K, IO>
 where
     C: Default,
 {
@@ -154,7 +157,7 @@ where
     }
 }
 
-impl<C, T, IO> Connector<T> for PooledConnector<C, T, IO>
+impl<C, T, IO: Split + AsyncReadRent + AsyncWriteRent> Connector<T> for PooledConnector<C, T, IO>
 where
     T: ToSocketAddrs + Hash + Eq + Debug + ToOwned<Owned = T>,
     C: Connector<T, Connection = IO>,

@@ -17,24 +17,25 @@ const DEFAULT_POOL_SIZE: usize = 32;
 // https://datatracker.ietf.org/doc/html/rfc6335
 const MAX_KEEPALIVE_CONNS: usize = 16384;
 
-use monoio_http::h1::codec::ClientCodec;
+use monoio::io::{sink::Sink, AsyncWriteRent};
+use monoio_http::h1::{codec::ClientCodec, BorrowFramedRead, FramedRead};
 
 type Conns<K, IO> = Rc<UnsafeCell<SharedInner<K, IO>>>;
 type WeakConns<K, IO> = Weak<UnsafeCell<SharedInner<K, IO>>>;
 
-struct IdleCodec<IO> {
+struct IdleCodec<IO: AsyncWriteRent> {
     codec: ClientCodec<IO>,
     idle_at: Instant,
 }
 
-struct SharedInner<K, IO> {
+struct SharedInner<K, IO: AsyncWriteRent> {
     mapping: HashMap<K, VecDeque<IdleCodec<IO>>>,
     max_idle: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
-impl<K, IO> SharedInner<K, IO> {
+impl<K, IO: AsyncWriteRent> SharedInner<K, IO> {
     #[cfg(feature = "time")]
     fn new(max_idle: Option<usize>) -> (local_sync::oneshot::Sender<()>, Self) {
         let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
@@ -75,11 +76,11 @@ impl<K, IO> SharedInner<K, IO> {
 
 // TODO: Connection leak? Maybe remove expired connection periodically.
 #[derive(Debug)]
-pub struct ConnectionPool<K: Hash + Eq, IO> {
+pub struct ConnectionPool<K: Hash + Eq, IO: AsyncWriteRent> {
     conns: Conns<K, IO>,
 }
 
-impl<K: Hash + Eq, IO> Clone for ConnectionPool<K, IO> {
+impl<K: Hash + Eq, IO: AsyncWriteRent> Clone for ConnectionPool<K, IO> {
     fn clone(&self) -> Self {
         Self {
             conns: self.conns.clone(),
@@ -87,7 +88,7 @@ impl<K: Hash + Eq, IO> Clone for ConnectionPool<K, IO> {
     }
 }
 
-pub struct PooledConnection<K, IO>
+pub struct PooledConnection<K, IO: AsyncWriteRent>
 where
     K: Hash + Eq + Debug,
 {
@@ -100,7 +101,7 @@ where
     reuseable: bool,
 }
 
-impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
+impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn new(idle_interval: Option<Duration>, max_idle: Option<usize>) -> Self {
         let (tx, inner) = SharedInner::new(max_idle);
@@ -123,7 +124,7 @@ impl<K: Hash + Eq + 'static, IO: 'static> ConnectionPool<K, IO> {
     }
 }
 
-impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
+impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> Default for ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn default() -> Self {
         Self::new(None, None)
@@ -135,7 +136,7 @@ impl<K: Hash + Eq + 'static, IO: 'static> Default for ConnectionPool<K, IO> {
     }
 }
 
-impl<K, IO> PooledConnection<K, IO>
+impl<K, IO: AsyncWriteRent> PooledConnection<K, IO>
 where
     K: Hash + Eq + Debug,
 {
@@ -144,7 +145,22 @@ where
     }
 }
 
-impl<K, IO> Deref for PooledConnection<K, IO>
+impl<K: Hash + Eq + Debug, IO: AsyncWriteRent> BorrowFramedRead for PooledConnection<K, IO>
+where
+    ClientCodec<IO>: BorrowFramedRead,
+{
+    type IO = <ClientCodec<IO> as BorrowFramedRead>::IO;
+    type Codec = <ClientCodec<IO> as BorrowFramedRead>::Codec;
+
+    fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec> {
+        self.codec
+            .as_mut()
+            .expect("connection should be present")
+            .framed_mut()
+    }
+}
+
+impl<K, IO: AsyncWriteRent> Deref for PooledConnection<K, IO>
 where
     K: Hash + Eq + Debug,
 {
@@ -155,7 +171,7 @@ where
     }
 }
 
-impl<K, IO> DerefMut for PooledConnection<K, IO>
+impl<K, IO: AsyncWriteRent> DerefMut for PooledConnection<K, IO>
 where
     K: Hash + Eq + Debug,
 {
@@ -164,7 +180,50 @@ where
     }
 }
 
-impl<K, IO> Drop for PooledConnection<K, IO>
+impl<K: Hash + Eq + Debug, IO: AsyncWriteRent, R> Sink<R> for PooledConnection<K, IO>
+where
+    ClientCodec<IO>: Sink<R>,
+{
+    type Error = <ClientCodec<IO> as Sink<R>>::Error;
+
+    type SendFuture<'a> = <ClientCodec<IO> as Sink<R>>::SendFuture<'a>
+    where
+        Self: 'a, R: 'a;
+
+    type FlushFuture<'a> = <ClientCodec<IO> as Sink<R>>::FlushFuture<'a>
+    where
+        Self: 'a;
+
+    type CloseFuture<'a> = <ClientCodec<IO> as Sink<R>>::CloseFuture<'a>
+    where
+        Self: 'a;
+
+    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
+    where
+        R: 'a,
+    {
+        self.codec
+            .as_mut()
+            .expect("connection should be present")
+            .send(item)
+    }
+
+    fn flush(&mut self) -> Self::FlushFuture<'_> {
+        self.codec
+            .as_mut()
+            .expect("connection should be present")
+            .flush()
+    }
+
+    fn close(&mut self) -> Self::CloseFuture<'_> {
+        self.codec
+            .as_mut()
+            .expect("connection should be present")
+            .close()
+    }
+}
+
+impl<K, IO: AsyncWriteRent> Drop for PooledConnection<K, IO>
 where
     K: Hash + Eq + Debug,
 {
@@ -212,7 +271,7 @@ where
     }
 }
 
-impl<K, IO> ConnectionPool<K, IO>
+impl<K, IO: AsyncWriteRent> ConnectionPool<K, IO>
 where
     K: Hash + Eq + ToOwned<Owned = K> + Debug,
 {
@@ -251,14 +310,14 @@ where
 }
 
 // TODO: make interval not eq to idle_dur
-struct IdleTask<K, IO> {
+struct IdleTask<K, IO: AsyncWriteRent> {
     tx: local_sync::oneshot::Sender<()>,
     conns: WeakConns<K, IO>,
     interval: monoio::time::Interval,
     idle_dur: Duration,
 }
 
-impl<K, IO> Future for IdleTask<K, IO> {
+impl<K, IO: AsyncWriteRent> Future for IdleTask<K, IO> {
     type Output = ();
 
     fn poll(

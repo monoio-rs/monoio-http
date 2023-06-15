@@ -4,9 +4,12 @@
 use bytes::Bytes;
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
-use monoio_http::h1::{
-    codec::{decoder::FillPayload, ClientCodec},
-    payload::{FixedPayload, Payload, PayloadError},
+use monoio_http::{
+    common::body::{Body, StreamHint},
+    h1::{
+        codec::ClientCodec,
+        payload::{FramedPayload, Payload, PayloadError},
+    },
 };
 
 #[monoio::main]
@@ -41,17 +44,16 @@ async fn main() {
         .expect("parse response failed");
 
     println!("Status code: {}", resp.status());
-    let payload = match resp.into_body() {
-        Payload::Fixed(payload) => payload,
-        _ => panic!("unexpected payload type"),
-    };
-    codec.fill_payload().await.expect("unable to get payload");
-    process_payload(payload).await;
+    let body = resp.into_body().with_io(codec);
+    if body.stream_hint() != StreamHint::Fixed {
+        panic!("unexpected body type");
+    }
+    process_payload(body).await;
 }
 
-async fn process_payload(mut payload: FixedPayload) {
+async fn process_payload(mut payload: FramedPayload<ClientCodec<monoio::net::TcpStream>>) {
     let data = payload
-        .next()
+        .next_data()
         .await
         .unwrap()
         .expect("unable to read response body");
