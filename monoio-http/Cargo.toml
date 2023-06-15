@@ -10,13 +10,17 @@ version = "0.1.2"
 [dependencies]
 monoio = { version = "0.1.3" }
 monoio-compat = { version = "0.1.1" }
-monoio-codec = { version = "0.0.5" }
+monoio-codec = { version = "0.1.0" }
+service-async = { version = "0.1.3" }
 
 bytes = "1"
 http = "0.2"
 httparse = "1"
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+async-stream = "0.3.5"
+
 # H2 crate dependencies
 futures-core = { version = "0.3", default-features = false }
 futures-sink = { version = "0.3", default-features = false }

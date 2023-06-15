@@ -5,20 +5,24 @@ use http::{
     header::HeaderName, method::InvalidMethod, status::InvalidStatusCode, uri::InvalidUri,
     HeaderMap, HeaderValue, Method, StatusCode, Uri, Version,
 };
-use monoio::io::{stream::Stream, AsyncReadRent};
+use monoio::io::{stream::Stream, AsyncReadRent, OwnedReadHalf};
 use monoio_codec::{Decoder, FramedRead};
 use thiserror::Error as ThisError;
 
 use crate::{
     common::{
+        body::StreamHint,
         ext::Reason,
         request::{Request, RequestHead},
         response::{Response, ResponseHead},
         BorrowHeaderMap, FromParts,
     },
-    h1::payload::{
-        fixed_payload_pair, stream_payload_pair, FixedPayloadSender, Payload, PayloadError,
-        StreamPayloadSender,
+    h1::{
+        payload::{
+            fixed_payload_pair, stream_payload_pair, FixedPayloadSender, FramedPayload, Payload,
+            PayloadError, StreamPayloadSender,
+        },
+        BorrowFramedRead,
     },
 };
 
@@ -66,6 +70,22 @@ where
 {
     fn default() -> Self {
         NextDecoder::None
+    }
+}
+
+pub enum PayloadDecoder<FDE, SDE> {
+    None,
+    Fixed(FDE),
+    Streamed(SDE),
+}
+
+impl<FDE, SDE> PayloadDecoder<FDE, SDE> {
+    pub fn hint(&self) -> StreamHint {
+        match self {
+            PayloadDecoder::None => StreamHint::None,
+            PayloadDecoder::Fixed(_) => StreamHint::Fixed,
+            PayloadDecoder::Streamed(_) => StreamHint::Stream,
+        }
     }
 }
 
@@ -281,36 +301,103 @@ impl Decoder for ChunkedBodyDecoder {
     }
 }
 
+pub trait ItemWrapper<I, R> {
+    type Output;
+    fn wrap_none(input: I) -> Self::Output;
+    fn wrap_fixed(input: I, length: usize) -> Self::Output;
+    fn wrap_stream(input: I) -> Self::Output;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChannelWrapper;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectWrapper;
+
+impl<H, R> ItemWrapper<H, R> for ChannelWrapper
+where
+    R: FromParts<H, Payload>,
+{
+    type Output = (R, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>);
+
+    #[inline]
+    fn wrap_none(header: H) -> Self::Output {
+        let request = R::from_parts(header, Payload::None);
+        (request, NextDecoder::None)
+    }
+
+    #[inline]
+    fn wrap_fixed(header: H, length: usize) -> Self::Output {
+        let (payload, sender) = fixed_payload_pair();
+        let request = R::from_parts(header, Payload::from(payload));
+        (
+            request,
+            NextDecoder::Fixed(FixedBodyDecoder(length), sender),
+        )
+    }
+
+    #[inline]
+    fn wrap_stream(header: H) -> Self::Output {
+        let (payload, sender) = stream_payload_pair();
+        let request = R::from_parts(header, Payload::from(payload));
+        (
+            request,
+            NextDecoder::Streamed(ChunkedBodyDecoder::default(), sender),
+        )
+    }
+}
+
+impl<H, R> ItemWrapper<H, R> for DirectWrapper {
+    type Output = (H, PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>);
+
+    #[inline]
+    fn wrap_none(header: H) -> Self::Output {
+        (header, PayloadDecoder::None)
+    }
+
+    #[inline]
+    fn wrap_fixed(header: H, length: usize) -> Self::Output {
+        (header, PayloadDecoder::Fixed(FixedBodyDecoder(length)))
+    }
+
+    #[inline]
+    fn wrap_stream(header: H) -> Self::Output {
+        (header, PayloadDecoder::Streamed(ChunkedBodyDecoder(None)))
+    }
+}
+
 /// A wrapper around D(normally RequestHeaderDecoder and ResponseHeaderDecoder).
 /// Mainly for extract special headers and return the raw item and payload to
 /// satisfy the constraint of `ComposeDecoder`.
-pub struct GenericHeadDecoder<R, D> {
+pub struct GenericHeadDecoder<R, D, F> {
     decoder: D,
-    _marker: PhantomData<R>,
+    _marker_f: PhantomData<F>,
+    _marker_r: PhantomData<R>,
 }
 
-impl<R, D> GenericHeadDecoder<R, D> {
+impl<R, D, F> GenericHeadDecoder<R, D, F> {
     pub fn new(decoder: D) -> Self {
         Self {
             decoder,
-            _marker: PhantomData,
+            _marker_f: PhantomData,
+            _marker_r: PhantomData,
         }
     }
 }
 
-impl<R, D: Default> Default for GenericHeadDecoder<R, D> {
+impl<R, D: Default, F> Default for GenericHeadDecoder<R, D, F> {
     fn default() -> Self {
         Self::new(D::default())
     }
 }
 
-impl<R, D> Decoder for GenericHeadDecoder<R, D>
+impl<R, D, F> Decoder for GenericHeadDecoder<R, D, F>
 where
     D: Decoder<Error = DecodeError>,
-    R: FromParts<D::Item, Payload>,
     D::Item: BorrowHeaderMap,
+    F: ItemWrapper<D::Item, R>,
 {
-    type Item = (R, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>);
+    type Item = F::Output;
     type Error = DecodeError;
 
     #[inline]
@@ -323,12 +410,7 @@ where
                 if let Some(x) = head.header_map().get(http::header::TRANSFER_ENCODING) {
                     // Check chunked
                     if x.as_bytes().eq_ignore_ascii_case(b"chunked") {
-                        let (payload, sender) = stream_payload_pair();
-                        let request = R::from_parts(head, Payload::from(payload));
-                        return Ok(Some((
-                            request,
-                            NextDecoder::Streamed(ChunkedBodyDecoder::default(), sender),
-                        )));
+                        return Ok(Some(F::wrap_stream(head)));
                     }
                     // Check not identity
                     if !x.as_bytes().eq_ignore_ascii_case(b"identity") {
@@ -349,20 +431,12 @@ where
                         Err(_) => return Err(DecodeError::Header),
                     };
                     if content_length == 0 {
-                        let request = R::from_parts(head, Payload::None);
-                        return Ok(Some((request, NextDecoder::None)));
+                        return Ok(Some(F::wrap_none(head)));
                     } else {
-                        let (payload, sender) = fixed_payload_pair();
-                        let request = R::from_parts(head, Payload::from(payload));
-                        return Ok(Some((
-                            request,
-                            NextDecoder::Fixed(FixedBodyDecoder(content_length), sender),
-                        )));
+                        return Ok(Some(F::wrap_fixed(head, content_length)));
                     }
                 }
-
-                let request = R::from_parts(head, Payload::None);
-                Ok(Some((request, NextDecoder::None)))
+                Ok(Some(F::wrap_none(head)))
             }
             Ok(None) => Ok(None),
             Err(e) => Err(e),
@@ -504,10 +578,67 @@ where
     }
 }
 
-pub type RequestDecoder<IO> = GenericDecoder<IO, GenericHeadDecoder<Request, RequestHeadDecoder>>;
+pub struct IoOwnedDecoder<IO, HD> {
+    framed: FramedRead<IO, HD>,
+}
 
+impl<IO, HD> BorrowFramedRead for IoOwnedDecoder<IO, HD> {
+    type IO = IO;
+    type Codec = HD;
+
+    fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec> {
+        &mut self.framed
+    }
+}
+
+impl<IO, HD: Default> IoOwnedDecoder<IO, HD> {
+    pub fn new(io: IO) -> Self {
+        Self {
+            framed: FramedRead::new(io, HD::default()),
+        }
+    }
+}
+
+impl<IO, HD> Stream for IoOwnedDecoder<IO, HD>
+where
+    IO: AsyncReadRent,
+    HD: Decoder<
+        Item = (
+            ResponseHead,
+            PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
+        ),
+        Error = DecodeError,
+    >,
+{
+    type Item =
+        Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, DecodeError>;
+    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
+
+    fn next(&mut self) -> Self::NextFuture<'_> {
+        async move {
+            match self.framed.next().await? {
+                Err(e) => Some(Err(e)),
+                Ok((header, decoder)) => Some(Ok(http::Response::from_parts(header, decoder))),
+            }
+        }
+    }
+}
+
+impl PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder> {
+    pub fn with_io<IO>(self, next_with: IO) -> FramedPayload<IO> {
+        FramedPayload::new(next_with, self)
+    }
+}
+
+pub type RequestDecoder<IO> =
+    GenericDecoder<IO, GenericHeadDecoder<Request, RequestHeadDecoder, ChannelWrapper>>;
 pub type ResponseDecoder<IO> =
-    GenericDecoder<IO, GenericHeadDecoder<Response, ResponseHeadDecoder>>;
+    GenericDecoder<IO, GenericHeadDecoder<Response, ResponseHeadDecoder, ChannelWrapper>>;
+
+pub type DirectHeadDecoder = GenericHeadDecoder<Response, ResponseHeadDecoder, DirectWrapper>;
+pub type ClientResponseDecoder<IO> = IoOwnedDecoder<IO, DirectHeadDecoder>;
+pub type ClientResponse<IO> =
+    http::Response<FramedPayload<FramedRead<OwnedReadHalf<IO>, DirectHeadDecoder>>>;
 
 #[inline(always)]
 fn header_lines_len(ptr: *const u8, len: usize) -> Result<usize, DecodeError> {

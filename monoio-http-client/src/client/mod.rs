@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use http::{uri::Scheme, HeaderMap};
 use monoio::io::{sink::SinkExt, stream::Stream, AsyncReadRent, AsyncWriteRent};
-use monoio_http::h1::{codec::decoder::FillPayload, payload::Payload};
+use monoio_http::h1::payload::{BoxedFramedPayload, FramedPayload, Payload};
 
 use self::{
     connector::{Connector, DefaultTcpConnector, DefaultTlsConnector},
@@ -93,13 +93,14 @@ impl Client {
     pub async fn send(
         &self,
         req: http::Request<Payload>,
-    ) -> Result<http::Response<Payload>, crate::Error> {
+    ) -> Result<http::Response<BoxedFramedPayload>, crate::Error> {
         match req.uri().scheme() {
             Some(s) if s == &Scheme::HTTP => {
-                Self::send_with_connector(&self.shared.http_connector, req).await
+                Self::send_with_connector_boxed(&self.shared.http_connector, req).await
             }
+            #[cfg(any(feature = "rustls", feature = "native-tls"))]
             Some(s) if s == &Scheme::HTTPS => {
-                Self::send_with_connector(&self.shared.https_connector, req).await
+                Self::send_with_connector_boxed(&self.shared.https_connector, req).await
             }
             _ => Err(Error::FromUri(FromUriError::UnsupportScheme)),
         }
@@ -121,59 +122,67 @@ macro_rules! client_impl {
 }
 
 client_impl! {
+    pub async fn send_with_connector_boxed<CNTR, IO>(
+        connector: &CNTR,
+        request: http::Request<Payload>,
+    ) -> Result<http::Response<BoxedFramedPayload>, crate::Error>
+    where
+        CNTR: Connector<Key, Connection = PooledConnection<Key, IO>>,
+        IO: AsyncReadRent + AsyncWriteRent + 'static,
+    {
+        // todo!()
+        let (header, body) = Self::send_with_connector(connector, request).await?.into_parts();
+        Ok(http::Response::from_parts(header, body.into_boxed()))
+    }
+
     pub async fn send_with_connector<CNTR, IO>(
         connector: &CNTR,
         request: http::Request<Payload>,
-    ) -> Result<http::Response<Payload>, crate::Error>
+    ) -> Result<http::Response<FramedPayload<PooledConnection<Key, IO>>>, crate::Error>
     where
         CNTR: Connector<Key, Connection = PooledConnection<Key, IO>>,
         IO: AsyncReadRent + AsyncWriteRent,
     {
         let key = request.uri().try_into()?;
-        if let Ok(mut codec) = connector.connect(key).await {
-            match codec.send_and_flush(request).await {
-                Ok(_) => match codec.next().await {
-                    Some(Ok(resp)) => {
-                        if let Err(e) = codec.fill_payload().await {
-                            #[cfg(feature = "logging")]
-                            tracing::error!("fill payload error {:?}", e);
-                            return Err(Error::Decode(e));
-                        }
-                        let resp: http::Response<Payload> = resp;
-                        let header_value = resp.headers().get(http::header::CONNECTION);
-                        let reuse_conn = match header_value {
-                            Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
-                            None => resp.version() != http::Version::HTTP_10,
-                        };
-                        codec.set_reuseable(reuse_conn);
-                        Ok(resp)
-                    }
-                    Some(Err(e)) => {
-                        #[cfg(feature = "logging")]
-                        tracing::error!("decode upstream response error {:?}", e);
-                        Err(Error::Decode(e))
-                    }
-                    None => {
-                        #[cfg(feature = "logging")]
-                        tracing::error!("upstream return eof");
-                        codec.set_reuseable(false);
-                        Err(Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "unexpected eof when read response",
-                        )))
-                    }
-                },
-                Err(e) => {
-                    #[cfg(feature = "logging")]
-                    tracing::error!("send upstream request error {:?}", e);
-                    Err(Error::Encode(e))
-                }
-            }
-        } else {
-            Err(Error::Io(std::io::Error::new(
+        let mut codec = match connector.connect(key).await {
+            Ok(codec) => codec,
+            _ => return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 "connection established failed",
-            )))
+            ))),
+        };
+
+        if let Err(e) = codec.send_and_flush(request).await {
+            #[cfg(feature = "logging")]
+            tracing::error!("send upstream request error {:?}", e);
+            return Err(Error::Encode(e));
+        }
+        match codec.next().await {
+            Some(Ok(resp)) => {
+                let header_value = resp.headers().get(http::header::CONNECTION);
+                let reuse_conn = match header_value {
+                    Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
+                    None => resp.version() != http::Version::HTTP_10,
+                };
+                codec.set_reuseable(reuse_conn);
+                let (header, body_builder) = resp.into_parts();
+                let body = body_builder.with_io(codec);
+                Ok(http::Response::from_parts(header, body))
+            }
+            Some(Err(e)) => {
+                #[cfg(feature = "logging")]
+                tracing::error!("decode upstream response error {:?}", e);
+                Err(Error::Decode(e))
+            }
+            None => {
+                #[cfg(feature = "logging")]
+                tracing::error!("upstream return eof");
+                codec.set_reuseable(false);
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "unexpected eof when read response",
+                )))
+            }
         }
     }
 

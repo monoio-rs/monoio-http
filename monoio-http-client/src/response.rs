@@ -1,9 +1,9 @@
-use std::hint::unreachable_unchecked;
-
 use bytes::{Bytes, BytesMut};
 use http::{Extensions, HeaderMap, HeaderValue, StatusCode, Version};
-use monoio::io::stream::Stream;
-use monoio_http::h1::payload::Payload;
+use monoio_http::{
+    common::body::{Body, StreamHint},
+    h1::payload::BoxedFramedPayload,
+};
 
 pub struct ClientResponse {
     /// The response's status
@@ -15,11 +15,11 @@ pub struct ClientResponse {
     /// The response's extensions
     extensions: Extensions,
     /// Payload
-    body: Payload,
+    body: BoxedFramedPayload,
 }
 
 impl ClientResponse {
-    pub fn new(inner: http::Response<Payload>) -> Self {
+    pub fn new(inner: http::Response<BoxedFramedPayload>) -> Self {
         let (head, body) = inner.into_parts();
         Self {
             status: head.status,
@@ -66,46 +66,25 @@ impl ClientResponse {
 
     /// Get the full response body as `Bytes`.
     pub async fn bytes(self) -> crate::Result<Bytes> {
-        match self.body {
-            Payload::None => Ok(Bytes::new()),
-            Payload::Fixed(mut p) => p.next().await.unwrap().map_err(Into::into),
-            Payload::Stream(mut s) => {
-                let mut ret = BytesMut::new();
-                while let Some(payload_result) = s.next().await {
-                    let data = payload_result?;
-                    ret.extend(data);
-                }
-                Ok(ret.freeze())
-            }
+        let mut body = self.body;
+        if body.stream_hint() == StreamHint::None {
+            return Ok(Bytes::new());
         }
-    }
 
-    /// Stream a chunk of the response body.
-    pub async fn chunk(&mut self) -> crate::Result<Option<Bytes>> {
-        match &mut self.body {
-            Payload::None => Ok(None),
-            Payload::Fixed(_) => {
-                let mut p = match std::mem::replace(&mut self.body, Payload::None) {
-                    Payload::None => unsafe { unreachable_unchecked() },
-                    Payload::Fixed(p) => p,
-                    Payload::Stream(_) => unsafe { unreachable_unchecked() },
-                };
-                p.next()
-                    .await
-                    .unwrap()
-                    .map_err(Into::into)
-                    .map(Option::Some)
-            }
-            Payload::Stream(s) => s.next().await.transpose().map_err(Into::into),
+        let mut data = BytesMut::new();
+        while let Some(res) = body.next_data().await {
+            data.extend(res?);
         }
+        Ok(data.freeze())
     }
 
     /// Get raw body(Payload).
-    pub fn raw_body(self) -> Payload {
+    pub fn raw_body(self) -> BoxedFramedPayload {
         self.body
     }
 
     /// Try to deserialize the response body as JSON.
+    // TODO(chihai): use from_reader
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> crate::Result<T> {
         let bytes = self.bytes().await?;
         let d = serde_json::from_slice(&bytes)?;
