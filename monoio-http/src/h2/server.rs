@@ -587,8 +587,8 @@ where
 #[cfg(feature = "stream")]
 impl<T, B> futures_core::Stream for Connection<T, B>
 where
-    T: AsyncReadRent + AsyncWriteRent + Unpin,
-    B: Buf,
+    T: AsyncReadRent + AsyncWriteRent + Unpin + 'static,
+    B: Buf + 'static,
 {
     type Item = Result<(Request<RecvStream>, SendResponse<B>), crate::h2::Error>;
 

@@ -37,22 +37,22 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
     type Data = D;
     type Error = E;
 
-    type DataFuture<'a> = impl std::future::Future<Output = Result<Option<D>, E>> + 'a
+    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<D, E>>> + 'a
     where
         Self: 'a;
 
-    fn data(&mut self) -> Self::DataFuture<'_> {
+    fn next_data(&mut self) -> Self::DataFuture<'_> {
         async move {
             match self {
                 Payload::None => {
                     // set special header
-                    Ok(None)
+                    None
                 }
                 Payload::Fixed(p) => {
                     // get data(to set content length and body)
-                    p.get().await.map(|d| Some(d))
+                    Some(p.get().await)
                 }
-                Payload::Stream(p) => p.next().await.transpose(),
+                Payload::Stream(p) => p.next().await,
                 Payload::H2BodyStream(_) => {
                     unreachable!()
                 }

@@ -475,12 +475,12 @@ impl RecvStream {
 impl Body for RecvStream {
     type Data = Bytes;
     type Error = crate::h2::Error;
-    type DataFuture<'a> = impl std::future::Future<Output = Result<Option<Self::Data>, Self::Error>> + 'a
+    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
     where
         Self: 'a;
 
-    fn data(&mut self) -> Self::DataFuture<'_> {
-        async move { self.data().await.transpose() }
+    fn next_data(&mut self) -> Self::DataFuture<'_> {
+        self.data()
     }
 
     fn stream_hint(&self) -> crate::common::body::StreamHint {

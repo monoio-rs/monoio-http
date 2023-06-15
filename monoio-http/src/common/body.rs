@@ -9,11 +9,10 @@ pub enum StreamHint {
 pub trait Body {
     type Data: IoBuf;
     type Error;
-    type DataFuture<'a>: std::future::Future<Output = Result<Option<Self::Data>, Self::Error>>
+    type DataFuture<'a>: std::future::Future<Output = Option<Result<Self::Data, Self::Error>>>
     where
         Self: 'a;
 
-    fn data(&mut self) -> Self::DataFuture<'_>;
-    // fn end_of_stream(&self) -> bool;
+    fn next_data(&mut self) -> Self::DataFuture<'_>;
     fn stream_hint(&self) -> StreamHint;
 }

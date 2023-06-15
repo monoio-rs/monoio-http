@@ -4,7 +4,7 @@ use bytes::{BufMut, BytesMut};
 use http::{HeaderMap, HeaderValue, StatusCode, Version};
 use monoio::{
     buf::IoBuf,
-    io::{sink::Sink, stream::Stream, AsyncWriteRent, AsyncWriteRentExt},
+    io::{sink::Sink, AsyncWriteRent, AsyncWriteRentExt},
 };
 use monoio_codec::Encoder;
 use thiserror::Error as ThisError;
@@ -269,9 +269,10 @@ where
                 }
                 StreamHint::Fixed => {
                     // get data(to set content length and body)
-
-                    let data = payload.data().await?;
-                    let data = data.unwrap();
+                    let data = payload
+                        .next_data()
+                        .await
+                        .expect("empty data with fixed hint")?;
                     // set special header
                     HeadEncoder::set_length_header(
                         header_map,
@@ -305,7 +306,8 @@ where
                         .encode(head, &mut self.buf)
                         .map_err(Into::into)?;
 
-                    while let Ok(Some(data)) = payload.data().await {
+                    while let Some(data_res) = payload.next_data().await {
+                        let data = data_res?;
                         write!(self.buf, "{:X}\r\n", data.bytes_init())
                             .expect("unable to format data length");
                         if self.buf.len() + data.bytes_init() > BACKPRESSURE_BOUNDARY {
