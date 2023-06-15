@@ -43,14 +43,8 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
     fn next_data(&mut self) -> Self::DataFuture<'_> {
         async move {
             match self {
-                Payload::None => {
-                    // set special header
-                    None
-                }
-                Payload::Fixed(p) => {
-                    // get data(to set content length and body)
-                    Some(p.get().await)
-                }
+                Payload::None => None,
+                Payload::Fixed(p) => p.next().await,
                 Payload::Stream(p) => p.next().await,
             }
         }
@@ -129,6 +123,7 @@ pub struct FixedPayloadSender<D = Bytes, E = PayloadError> {
 struct FixedInner<D, E> {
     item: Option<Result<D, E>>,
     task: Option<Waker>,
+    eof: bool,
 }
 
 impl<D, E> Default for FixedInner<D, E> {
@@ -136,6 +131,7 @@ impl<D, E> Default for FixedInner<D, E> {
         Self {
             item: None,
             task: None,
+            eof: false,
         }
     }
 }
@@ -148,34 +144,49 @@ impl<D, E> FixedInner<D, E> {
     }
 }
 
+impl<D: IoBuf, E> Stream for FixedPayload<D, E> {
+    type Item = Result<D, E>;
+
+    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
+
+    fn next(&mut self) -> Self::NextFuture<'_> {
+        async move {
+            loop {
+                {
+                    let inner = unsafe { &mut *self.inner.get() };
+                    if inner.eof {
+                        return None;
+                    }
+                    if let Some(item) = inner.item.take() {
+                        inner.eof = true;
+                        return Some(item);
+                    }
+                }
+                poll_fn(|cx| {
+                    let inner = unsafe { &mut *self.inner.get() };
+                    if inner.item.is_some() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
+                            inner.task = Some(cx.waker().clone());
+                        }
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+            }
+        }
+    }
+}
+
 impl<D: IoBuf, E> FixedPayload<D, E> {
     pub fn new(data: D) -> Self {
         Self {
             inner: Rc::new(UnsafeCell::new(FixedInner {
                 item: Some(Ok(data)),
                 task: None,
+                eof: false,
             })),
-        }
-    }
-
-    pub async fn get(&mut self) -> Result<D, E> {
-        loop {
-            let inner = unsafe { &mut *self.inner.get() };
-            if let Some(item) = inner.item.take() {
-                return item;
-            }
-            poll_fn(|cx| {
-                let inner = unsafe { &mut *self.inner.get() };
-                if inner.item.is_some() {
-                    std::task::Poll::Ready(())
-                } else {
-                    if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
-                        inner.task = Some(cx.waker().clone());
-                    }
-                    std::task::Poll::Pending
-                }
-            })
-            .await;
         }
     }
 }
@@ -237,12 +248,14 @@ impl<D: IoBuf, E> Stream for StreamPayload<D, E> {
     fn next(&mut self) -> Self::NextFuture<'_> {
         async move {
             loop {
-                let inner = unsafe { &mut *self.inner.get() };
-                if let Some(data) = inner.items.pop_front() {
-                    return Some(data);
-                }
-                if inner.eof {
-                    return None;
+                {
+                    let inner = unsafe { &mut *self.inner.get() };
+                    if let Some(data) = inner.items.pop_front() {
+                        return Some(data);
+                    }
+                    if inner.eof {
+                        return None;
+                    }
                 }
                 poll_fn(|cx| {
                     let inner = unsafe { &mut *self.inner.get() };
@@ -321,10 +334,16 @@ mod tests {
             monoio::time::sleep(Duration::from_millis(2)).await;
             payload_sender.feed(Ok(Bytes::from_static(b"Hello")));
         });
-        assert_eq!(payload.get().await.unwrap(), Bytes::from_static(b"Hello"));
+        assert_eq!(
+            payload.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"Hello")
+        );
 
         let (mut payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
         payload_sender.feed(Ok(Bytes::from_static(b"World")));
-        assert_eq!(payload.get().await.unwrap(), Bytes::from_static(b"World"));
+        assert_eq!(
+            payload.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"World")
+        );
     }
 }

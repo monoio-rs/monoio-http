@@ -81,7 +81,11 @@ struct HttpbinResponse {
 }
 
 async fn process_payload(mut payload: FixedPayload) {
-    let data = payload.get().await.expect("unable to read response body");
+    let data = payload
+        .next()
+        .await
+        .unwrap()
+        .expect("unable to read response body");
     println!("{:?}", data);
     let resp: HttpbinResponse = serde_json::from_slice(&data).expect("unable to parse json body");
     println!("Response json: {resp:?}");

@@ -711,7 +711,7 @@ mod tests {
             _ => panic!("wrong payload type"),
         };
         assert!(decoder.fill_payload().await.is_ok());
-        let data = payload.get().await.unwrap();
+        let data = payload.next().await.unwrap().unwrap();
         assert_eq!(&data, &"body");
         assert!(decoder.next().await.is_none());
     }
@@ -728,7 +728,7 @@ mod tests {
             _ => panic!("wrong payload type"),
         };
         assert!(decoder.fill_payload().await.is_ok());
-        let data = payload.get().await.unwrap();
+        let data = payload.next().await.unwrap().unwrap();
         assert_eq!(&data, &"body");
         assert!(decoder.next().await.is_none());
     }

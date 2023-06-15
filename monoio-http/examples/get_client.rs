@@ -50,6 +50,10 @@ async fn main() {
 }
 
 async fn process_payload(mut payload: FixedPayload) {
-    let data = payload.get().await.expect("unable to read response body");
+    let data = payload
+        .next()
+        .await
+        .unwrap()
+        .expect("unable to read response body");
     println!("Response body: {}", String::from_utf8_lossy(&data));
 }
