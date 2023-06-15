@@ -30,7 +30,6 @@ where
     None,
     Fixed(FixedPayload<D, E>),
     Stream(StreamPayload<D, E>),
-    H2BodyStream(crate::h2::RecvStream),
 }
 
 impl<D: IoBuf, E> Body for Payload<D, E> {
@@ -53,9 +52,6 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
                     Some(p.get().await)
                 }
                 Payload::Stream(p) => p.next().await,
-                Payload::H2BodyStream(_) => {
-                    unreachable!()
-                }
             }
         }
     }
@@ -65,7 +61,6 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
             Payload::None => StreamHint::None,
             Payload::Fixed(_) => StreamHint::Fixed,
             Payload::Stream(_) => StreamHint::Stream,
-            Payload::H2BodyStream(_) => unreachable!(),
         }
     }
 }
