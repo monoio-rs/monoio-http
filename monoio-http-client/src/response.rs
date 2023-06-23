@@ -1,11 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use http::{Extensions, HeaderMap, HeaderValue, StatusCode, Version};
-use monoio_http::{
-    common::body::{Body, StreamHint},
-    h1::payload::BoxedFramedPayload,
+use monoio_http::common::{
+    body::{Body, StreamHint},
+    error::HttpError,
 };
 
-pub struct ClientResponse {
+pub struct ClientResponse<B> {
     /// The response's status
     status: StatusCode,
     /// The response's version
@@ -15,11 +15,11 @@ pub struct ClientResponse {
     /// The response's extensions
     extensions: Extensions,
     /// Payload
-    body: BoxedFramedPayload,
+    body: B,
 }
 
-impl ClientResponse {
-    pub fn new(inner: http::Response<BoxedFramedPayload>) -> Self {
+impl<B: Body<Data = Bytes, Error = HttpError>> ClientResponse<B> {
+    pub fn new(inner: http::Response<B>) -> Self {
         let (head, body) = inner.into_parts();
         Self {
             status: head.status,
@@ -79,7 +79,7 @@ impl ClientResponse {
     }
 
     /// Get raw body(Payload).
-    pub fn raw_body(self) -> BoxedFramedPayload {
+    pub fn raw_body(self) -> B {
         self.body
     }
 

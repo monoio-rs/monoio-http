@@ -3,7 +3,6 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     io,
-    pin::Pin,
     rc::{Rc, Weak},
     task::Waker,
 };
@@ -20,7 +19,7 @@ use super::{
     codec::decoder::{ChunkedBodyDecoder, DecodeError, FixedBodyDecoder, PayloadDecoder},
     BorrowFramedRead,
 };
-use crate::common::body::{Body, OwnedBody, StreamHint};
+use crate::common::body::{Body, StreamHint};
 
 #[derive(ThisError, Debug)]
 pub enum PayloadError {
@@ -304,6 +303,27 @@ impl<D, E> StreamPayloadSender<D, E> {
     }
 }
 
+pub struct FramedPayloadRecvr {
+    pub data_rx: local_sync::mpsc::unbounded::Rx<Option<Result<Bytes, DecodeError>>>,
+    pub hint: StreamHint,
+}
+
+impl Body for FramedPayloadRecvr {
+    type Data = Bytes;
+    type Error = DecodeError;
+    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
+    where
+        Self: 'a;
+
+    fn next_data(&mut self) -> Self::DataFuture<'_> {
+        async move { self.data_rx.recv().await? }
+    }
+
+    fn stream_hint(&self) -> StreamHint {
+        self.hint
+    }
+}
+
 /// Payload with io and codec, mainly used by client.
 pub struct FramedPayload<T> {
     // The io provider.
@@ -324,6 +344,10 @@ impl<T> FramedPayload<T> {
             payload_decoder,
             eof: false,
         }
+    }
+
+    pub fn get_source(self) -> T {
+        self.io_source
     }
 }
 
@@ -371,45 +395,6 @@ where
 
     fn stream_hint(&self) -> StreamHint {
         self.payload_decoder.hint()
-    }
-}
-
-pub struct BoxedFramedPayload {
-    stream: Pin<Box<dyn futures_core::Stream<Item = Result<Bytes, DecodeError>>>>,
-    hint: StreamHint,
-}
-
-impl<T> FramedPayload<T>
-where
-    T: BorrowFramedRead + 'static,
-    T::IO: AsyncReadRent,
-{
-    pub fn into_boxed(mut self) -> BoxedFramedPayload {
-        let hint = self.stream_hint();
-        BoxedFramedPayload {
-            stream: Box::pin(async_stream::stream! {
-                while let Some(r) = self.next_data().await {
-                    yield r;
-                }
-            }),
-            hint,
-        }
-    }
-}
-
-impl OwnedBody for BoxedFramedPayload {
-    type Data = Bytes;
-    type Error = DecodeError;
-
-    fn poll_next_data(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Self::Data, Self::Error>>> {
-        self.get_mut().stream.as_mut().poll_next(cx)
-    }
-
-    fn stream_hint(&self) -> StreamHint {
-        self.hint
     }
 }
 

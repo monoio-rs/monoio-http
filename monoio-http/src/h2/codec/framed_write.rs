@@ -163,7 +163,7 @@ where
                             total_bytes
                         );
 
-                        #[allow(cast_ref_to_mut)]
+                        #[allow(clippy::cast_ref_to_mut)]
                         let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
                         let write_fut = async move {
                             let res1 = io.write_all(encoder_buf_bytes).await;
@@ -194,7 +194,7 @@ where
                             encoder_buf_bytes.remaining()
                         );
 
-                        #[allow(cast_ref_to_mut)]
+                        #[allow(clippy::cast_ref_to_mut)]
                         let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
                         self.write_fut.arm_future(io.write_all(encoder_buf_bytes));
 
@@ -212,7 +212,7 @@ where
 
         tracing::trace!("flushing buffer io");
         if !self.flush_fut.armed() {
-            #[allow(cast_ref_to_mut)]
+            #[allow(clippy::cast_ref_to_mut)]
             let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
             tracing::trace!("Framed write Flush returning");
             self.flush_fut.arm_future(io.flush());
@@ -228,7 +228,7 @@ where
         ready!(self.flush(cx))?;
 
         if !self.shut_fut.armed() {
-            #[allow(cast_ref_to_mut)]
+            #[allow(clippy::cast_ref_to_mut)]
             let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
             self.flush_fut.arm_future(io.shutdown());
         }

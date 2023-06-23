@@ -1,6 +1,6 @@
 use std::{convert::Infallible, hash::Hash, net::ToSocketAddrs};
 
-use http::{uri::Authority, Uri};
+use http::{uri::Authority, Uri, Version};
 use service_async::{Param, ParamMut, ParamRef};
 use smol_str::SmolStr;
 use thiserror::Error as ThisError;
@@ -12,6 +12,23 @@ pub struct Key {
     server_name: rustls::ServerName,
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     server_name: String,
+    version: http::version::Version,
+}
+
+impl Key {
+    pub fn set_version(&mut self, version: Version) {
+        self.version = version;
+    }
+}
+
+pub trait HttpVersion {
+    fn get_version(&self) -> Version;
+}
+
+impl HttpVersion for Key {
+    fn get_version(&self) -> Version {
+        self.version
+    }
 }
 
 impl Clone for Key {
@@ -21,11 +38,18 @@ impl Clone for Key {
             port: self.port,
             #[cfg(any(feature = "rustls", feature = "native-tls"))]
             server_name: self.server_name.clone(),
+            version: self.version,
         }
     }
 }
 
 impl std::fmt::Debug for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
+    }
+}
+
+impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.host, self.port)
     }
@@ -43,6 +67,7 @@ impl Hash for Key {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.host.hash(state);
         self.port.hash(state);
+        self.version.hash(state);
     }
 }
 
@@ -150,6 +175,7 @@ impl TryFrom<(&Authority, u16)> for Key {
             port,
             #[cfg(any(feature = "rustls", feature = "native-tls"))]
             server_name,
+            version: http::version::Version::HTTP_11,
         })
     }
 }

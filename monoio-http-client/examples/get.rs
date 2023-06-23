@@ -2,9 +2,9 @@ use monoio_http_client::Client;
 
 #[monoio::main(enable_timer = true)]
 async fn main() {
-    let client = Client::new();
+    let client = Client::default();
     let resp = client
-        .get("http://captive.apple.com")
+        .get("https://httpbin.org/get")
         .send()
         .await
         .expect("request fail");
