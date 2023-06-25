@@ -8,7 +8,7 @@ name = "monoio-http"
 version = "0.1.2"
 
 [dependencies]
-monoio = { version = "0.1.3" }
+monoio = { version = "0.1.5" }
 monoio-compat = { version = "0.1.1" }
 monoio-codec = { version = "0.1.0" }
 service-async = { version = "0.1.3" }
