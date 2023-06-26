@@ -692,11 +692,13 @@ fn header_lines_len(ptr: *const u8, len: usize) -> Result<usize, DecodeError> {
         }
     }
     if result == 0 {
-        tracing::error!("invalid header with len: {}, index: {}", len, index);
+        tracing::debug!("parse headers failed with len: {}, index: {}", len, index);
         Ok(0)
     } else if result > len {
+        tracing::debug!("parse headers successful with len: {}", len);
         Ok(len)
     } else {
+        tracing::debug!("parse headers successsful with len: {}", result);
         Ok(result)
     }
 }
