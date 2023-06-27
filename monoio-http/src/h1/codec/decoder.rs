@@ -98,16 +98,16 @@ impl Decoder for RequestHeadDecoder {
     type Error = DecodeError;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let data_len = header_lines_len(src.as_ptr(), src.len())?;
-        if data_len < 4 {
-            // header line must at least have CRLFCRLF
-            return Ok(None);
-        }
-        let data = src.split_to(data_len).freeze();
-        let base_ptr = data.as_ptr() as usize;
+        let header_data = match memchr::memmem::find(src, b"\r\n\r\n")
+            .map(|idx| src.split_to(idx + 4).freeze())
+        {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let base_ptr = header_data.as_ptr() as usize;
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
-        let parse_status = req.parse(&data)?;
+        let parse_status = req.parse(&header_data)?;
         if httparse::Status::Partial == parse_status {
             return Ok(None);
         }
@@ -117,9 +117,10 @@ impl Decoder for RequestHeadDecoder {
             let n_end = n_begin + h.name.len();
             let v_begin = h.value.as_ptr() as usize - base_ptr;
             let v_end = v_begin + h.value.len();
-            let name = HeaderName::from_bytes(&data[n_begin..n_end]).unwrap();
-            let value =
-                unsafe { HeaderValue::from_maybe_shared_unchecked(data.slice(v_begin..v_end)) };
+            let name = HeaderName::from_bytes(&header_data[n_begin..n_end]).unwrap();
+            let value = unsafe {
+                HeaderValue::from_maybe_shared_unchecked(header_data.slice(v_begin..v_end))
+            };
             headers.append(name, value);
         }
         let version = match req.version {
@@ -132,7 +133,7 @@ impl Decoder for RequestHeadDecoder {
             Some(path) => {
                 let uri_start = path.as_bytes().as_ptr() as usize - base_ptr;
                 let uri_end = uri_start + path.len();
-                Uri::from_maybe_shared(data.slice(uri_start..uri_end))?
+                Uri::from_maybe_shared(header_data.slice(uri_start..uri_end))?
             }
             _ => Uri::default(),
         };
@@ -157,16 +158,16 @@ impl Decoder for ResponseHeadDecoder {
     type Error = DecodeError;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let data_len = header_lines_len(src.as_ptr(), src.len())?;
-        if data_len < 4 {
-            // header line must at least have CRLFCRLF
-            return Ok(None);
-        }
-        let data = src.split_to(data_len).freeze();
-        let base_ptr = data.as_ptr() as usize;
+        let header_data = match memchr::memmem::find(src, b"\r\n\r\n")
+            .map(|idx| src.split_to(idx + 4).freeze())
+        {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let base_ptr = header_data.as_ptr() as usize;
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut res = httparse::Response::new(&mut headers);
-        let parse_status = res.parse(&data)?;
+        let parse_status = res.parse(&header_data)?;
         if httparse::Status::Partial == parse_status {
             return Ok(None);
         }
@@ -177,9 +178,10 @@ impl Decoder for ResponseHeadDecoder {
             let n_end = n_begin + h.name.len();
             let v_begin = h.value.as_ptr() as usize - base_ptr;
             let v_end = v_begin + h.value.len();
-            let name = HeaderName::from_bytes(&data[n_begin..n_end]).unwrap();
-            let value =
-                unsafe { HeaderValue::from_maybe_shared_unchecked(data.slice(v_begin..v_end)) };
+            let name = HeaderName::from_bytes(&header_data[n_begin..n_end]).unwrap();
+            let value = unsafe {
+                HeaderValue::from_maybe_shared_unchecked(header_data.slice(v_begin..v_end))
+            };
             headers.append(name, value);
         }
         let version = match res.version {
@@ -639,67 +641,6 @@ pub type DirectHeadDecoder = GenericHeadDecoder<Response, ResponseHeadDecoder, D
 pub type ClientResponseDecoder<IO> = IoOwnedDecoder<IO, DirectHeadDecoder>;
 pub type ClientResponse<IO> =
     http::Response<FramedPayload<FramedRead<OwnedReadHalf<IO>, DirectHeadDecoder>>>;
-
-#[inline(always)]
-fn header_lines_len(ptr: *const u8, len: usize) -> Result<usize, DecodeError> {
-    const CR: u8 = b'\r';
-    const LF: u8 = b'\n';
-
-    #[inline(always)]
-    fn deref_char(ptr: &*const u8, index: usize) -> &u8 {
-        unsafe { &*ptr.add(index) }
-    }
-
-    if len < 4 {
-        return Ok(0);
-    }
-    let mut index = 0;
-    let mut result = 0;
-    loop {
-        let ch = deref_char(&ptr, index);
-        if ch == &CR {
-            if deref_char(&ptr, index - 2) == &CR
-                && deref_char(&ptr, index - 1) == &LF
-                && deref_char(&ptr, index + 1) == &LF
-            {
-                result = index + 2;
-                break;
-            } else if deref_char(&ptr, index + 1) == &LF
-                && deref_char(&ptr, index + 2) == &CR
-                && deref_char(&ptr, index + 3) == &LF
-            {
-                result = index + 4;
-                break;
-            }
-        } else if ch == &LF {
-            if deref_char(&ptr, index - 1) == &CR
-                && deref_char(&ptr, index + 1) == &CR
-                && deref_char(&ptr, index + 2) == &LF
-            {
-                result = index + 3;
-                break;
-            } else if deref_char(&ptr, index - 3) == &CR
-                && deref_char(&ptr, index - 2) == &LF
-                && deref_char(&ptr, index - 1) == &CR
-            {
-                result = index + 1;
-                break;
-            }
-        }
-        index += 4;
-        if index >= len {
-            break;
-        }
-    }
-    if result == 0 {
-        tracing::error!("invalid header with len: {}, index: {}", len, index);
-        Ok(0)
-    } else if result > len {
-        Ok(len)
-    } else {
-        Ok(result)
-    }
-}
 
 #[cfg(test)]
 mod tests {
