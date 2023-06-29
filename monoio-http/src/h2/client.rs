@@ -1370,7 +1370,7 @@ impl ResponseFuture {
 impl PushPromises {
     /// Get the next `PushPromise`.
     pub async fn push_promise(&mut self) -> Option<Result<PushPromise, crate::h2::Error>> {
-        futures_util::future::poll_fn(move |cx| self.poll_push_promise(cx)).await
+        std::future::poll_fn(move |cx| self.poll_push_promise(cx)).await
     }
 
     #[doc(hidden)]
@@ -1476,10 +1476,9 @@ impl Peer {
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
             //
-            // 1) Authority is not set. In this case, a request was issued with
-            //    a relative URI. This is permitted **only** when forwarding
-            //    HTTP 1.x requests. If the HTTP version is set to 2.0, then
-            //    this is an error.
+            // 1) Authority is not set. In this case, a request was issued with a relative URI. This
+            //    is permitted **only** when forwarding HTTP 1.x requests. If the HTTP version is
+            //    set to 2.0, then this is an error.
             //
             // 2) Authority is set, then the HTTP method *must* be CONNECT.
             //

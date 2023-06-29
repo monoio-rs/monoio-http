@@ -409,7 +409,7 @@ where
     pub async fn accept(
         &mut self,
     ) -> Option<Result<(Request<RecvStream>, SendResponse<B>), crate::h2::Error>> {
-        futures_util::future::poll_fn(move |cx| self.poll_accept(cx)).await
+        std::future::poll_fn(move |cx| self.poll_accept(cx)).await
     }
 
     #[doc(hidden)]

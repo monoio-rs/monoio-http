@@ -1,14 +1,11 @@
 use std::{
+    cell::UnsafeCell,
     io,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    task::{Context, Poll},
+    rc::Rc,
+    task::{Context, Poll, Waker},
 };
 
 use bytes::Buf;
-use futures_util::task::AtomicWaker;
 use monoio::io::AsyncWriteRent;
 
 use crate::h2::{
@@ -26,18 +23,18 @@ pub(crate) struct PingPong {
 }
 
 #[derive(Debug)]
-pub(crate) struct UserPings(Arc<UserPingsInner>);
+pub(crate) struct UserPings(Rc<UnsafeCell<UserPingsInner>>);
 
 #[derive(Debug)]
-struct UserPingsRx(Arc<UserPingsInner>);
+struct UserPingsRx(Rc<UnsafeCell<UserPingsInner>>);
 
 #[derive(Debug)]
 struct UserPingsInner {
-    state: AtomicUsize,
+    state: usize,
     /// Task to wake up the main `Connection`.
-    ping_task: AtomicWaker,
+    ping_task: Option<Waker>,
     /// Task to wake up `share::PingPong::poll_pong`.
-    pong_task: AtomicWaker,
+    pong_task: Option<Waker>,
 }
 
 #[derive(Debug)]
@@ -82,11 +79,11 @@ impl PingPong {
             return None;
         }
 
-        let user_pings = Arc::new(UserPingsInner {
-            state: AtomicUsize::new(USER_STATE_EMPTY),
-            ping_task: AtomicWaker::new(),
-            pong_task: AtomicWaker::new(),
-        });
+        let user_pings = Rc::new(UnsafeCell::new(UserPingsInner {
+            state: USER_STATE_EMPTY,
+            ping_task: None,
+            pong_task: None,
+        }));
         self.user_pings = Some(UserPingsRx(user_pings.clone()));
         Some(UserPings(user_pings))
     }
@@ -185,19 +182,18 @@ impl PingPong {
                 ping.sent = true;
             }
         } else if let Some(ref users) = self.user_pings {
-            if users.0.state.load(Ordering::Acquire) == USER_STATE_PENDING_PING {
+            let user_pings = unsafe { &mut *users.0.get() };
+            if user_pings.state == USER_STATE_PENDING_PING {
                 if !dst.poll_ready(cx)?.is_ready() {
                     return Poll::Pending;
                 }
 
                 dst.buffer(Ping::new(Ping::USER).into())
                     .expect("invalid ping frame");
-                users
-                    .0
-                    .state
-                    .store(USER_STATE_PENDING_PONG, Ordering::Release);
+                user_pings.state = USER_STATE_PENDING_PONG;
             } else {
-                users.0.ping_task.register(cx.waker());
+                user_pings.ping_task = Some(cx.waker().clone());
+                // users.0.ping_task.register(cx.waker());
             }
         }
 
@@ -215,20 +211,15 @@ impl ReceivedPing {
 
 impl UserPings {
     pub(crate) fn send_ping(&self) -> Result<(), Option<proto::Error>> {
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_EMPTY,        // current
-                USER_STATE_PENDING_PING, // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let user_pings = unsafe { &mut *self.0.get() };
+        let prev = user_pings.state; // current
+        if prev == USER_STATE_EMPTY {
+            user_pings.state = USER_STATE_PENDING_PING; // new
+        }
 
         match prev {
             USER_STATE_EMPTY => {
-                self.0.ping_task.wake();
+                user_pings.ping_task.take().unwrap().wake();
                 Ok(())
             }
             USER_STATE_CLOSED => Err(Some(broken_pipe().into())),
@@ -242,17 +233,12 @@ impl UserPings {
     pub(crate) fn poll_pong(&self, cx: &mut Context) -> Poll<Result<(), proto::Error>> {
         // Must register before checking state, in case state were to change
         // before we could register, and then the ping would just be lost.
-        self.0.pong_task.register(cx.waker());
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_RECEIVED_PONG, // current
-                USER_STATE_EMPTY,         // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let user_pings = unsafe { &mut *self.0.get() };
+        user_pings.pong_task = Some(cx.waker().clone());
+        let prev = user_pings.state; // current
+        if prev == USER_STATE_RECEIVED_PONG {
+            user_pings.state = USER_STATE_EMPTY; // new
+        }
 
         match prev {
             USER_STATE_RECEIVED_PONG => Poll::Ready(Ok(())),
@@ -266,19 +252,14 @@ impl UserPings {
 
 impl UserPingsRx {
     fn receive_pong(&self) -> bool {
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_PENDING_PONG,  // current
-                USER_STATE_RECEIVED_PONG, // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let user_pings = unsafe { &mut *self.0.get() };
+        let prev = user_pings.state; // current
+        if prev == USER_STATE_PENDING_PONG {
+            user_pings.state = USER_STATE_RECEIVED_PONG; // new
+        }
 
         if prev == USER_STATE_PENDING_PONG {
-            self.0.pong_task.wake();
+            user_pings.pong_task.take().unwrap().wake();
             true
         } else {
             false
@@ -288,8 +269,9 @@ impl UserPingsRx {
 
 impl Drop for UserPingsRx {
     fn drop(&mut self) {
-        self.0.state.store(USER_STATE_CLOSED, Ordering::Release);
-        self.0.pong_task.wake();
+        let user_pings = unsafe { &mut *self.0.get() };
+        user_pings.state = USER_STATE_CLOSED;
+        user_pings.pong_task.take().unwrap().wake();
     }
 }
 

@@ -8,7 +8,6 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use futures_core::Stream;
-// use monoio::io::{AsyncReadRent, AsyncWriteRent};
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
 
 use crate::h2::{
