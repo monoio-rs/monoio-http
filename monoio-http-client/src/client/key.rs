@@ -124,11 +124,11 @@ impl ParamMut<String> for Key {
 #[derive(ThisError, Debug)]
 pub enum FromUriError {
     #[cfg(feature = "rustls")]
-    #[error("invalid dns name")]
+    #[error("Invalid dns name")]
     InvalidDnsName(#[from] rustls::client::InvalidDnsNameError),
-    #[error("scheme not support")]
+    #[error("Scheme not supported")]
     UnsupportScheme,
-    #[error("no authority in uri")]
+    #[error("Missing authority in uri")]
     NoAuthority,
 }
 

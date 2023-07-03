@@ -1,12 +1,8 @@
 use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
-use monoio_http::{
-    common::{
-        body::{Body, FixedBody, HttpBody},
-        error::HttpError,
-    },
-    h1::payload::FramedPayloadRecvr,
-    h2::RecvStream,
+use monoio_http::common::{
+    body::{Body, FixedBody, HttpBody},
+    error::HttpError,
 };
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
@@ -94,29 +90,22 @@ client_request_impl! {
 
 impl<B> ClientRequest<B>
 where
-    B: Body<Data = Bytes, Error = HttpError>
-        + From<RecvStream>
-        + From<FramedPayloadRecvr>
-        + 'static
-        + FixedBody<BodyType = B>,
+    B: Body<Data = Bytes, Error = HttpError> + FixedBody<BodyType = B> + 'static,
     HttpBody: From<B>,
 {
-    pub async fn send(self) -> crate::Result<ClientResponse<B>> {
+    pub async fn send(self) -> crate::Result<ClientResponse> {
         let request = Self::build_request(self.builder, B::fixed_body(None))?;
         let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
-    pub async fn send_body(self, data: Bytes) -> crate::Result<ClientResponse<B>> {
+    pub async fn send_body(self, data: Bytes) -> crate::Result<ClientResponse> {
         let request = Self::build_request(self.builder, B::fixed_body(Some(data)))?;
         let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
-    pub async fn send_json<T: serde::Serialize>(
-        self,
-        data: &T,
-    ) -> crate::Result<ClientResponse<B>> {
+    pub async fn send_json<T: serde::Serialize>(self, data: &T) -> crate::Result<ClientResponse> {
         let body: Bytes = serde_json::to_vec(data)?.into();
         let builder = self.builder.header(
             http::header::CONTENT_TYPE,

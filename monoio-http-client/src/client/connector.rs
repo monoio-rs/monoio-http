@@ -8,15 +8,14 @@ use std::{
 };
 
 use bytes::Bytes;
-use http::{version, Version};
+use http::Version;
 use monoio::{
     io::{AsyncReadRent, AsyncWriteRent, Split},
     net::TcpStream,
 };
 use monoio_http::{
     common::{body::Body, error::HttpError},
-    h1::{codec::ClientCodec, payload::FramedPayloadRecvr},
-    h2::RecvStream,
+    h1::codec::ClientCodec,
 };
 
 use super::{
@@ -156,24 +155,21 @@ impl HttpConnector {
         &self,
         io: IO,
         version: Version,
-    ) -> Result<PooledConnectionPipe<K, B>, io::Error>
+    ) -> crate::Result<PooledConnectionPipe<K, B>>
     where
-        IO: AsyncReadRent + AsyncWriteRent + Unpin + Split + 'static,
+        IO: AsyncReadRent + AsyncWriteRent + Split + Unpin + 'static,
         K: Hash + Eq + Display + 'static,
-        B: Body<Data = bytes::Bytes, Error = HttpError>
-            + From<RecvStream>
-            + From<FramedPayloadRecvr>
-            + 'static,
+        B: Body<Data = bytes::Bytes, Error = HttpError> + 'static,
     {
         let (sender, recvr) = request_channel::<K, B>();
 
         let proto = if self.conn_config.proto == Proto::Auto {
-            version
+            version // Use version from the header
         } else {
             match self.conn_config.proto {
                 Proto::Http1 => Version::HTTP_11,
                 Proto::Http2 => Version::HTTP_2,
-                Proto::Auto => panic!(),
+                Proto::Auto => unreachable!(),
             }
         };
 
@@ -190,12 +186,7 @@ impl HttpConnector {
                 Ok(PooledConnectionPipe::Http1(sender))
             }
             Version::HTTP_2 => {
-                let (handle, h2_conn) = self
-                    .conn_config
-                    .h2_builder
-                    .handshake(io)
-                    .await
-                    .expect("Handshake failed");
+                let (handle, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {
                     if let Err(e) = h2_conn.await {
                         println!("H2 CONN ERR={:?}", e);
@@ -231,9 +222,10 @@ where
     _phantom: PhantomData<IO>,
 }
 
-impl<C, K: Hash + Eq + Display, IO: AsyncReadRent + AsyncWriteRent + Split, B> Clone
-    for PooledConnector<C, K, IO, B>
+impl<C, K, IO, B> Clone for PooledConnector<C, K, IO, B>
 where
+    K: Hash + Eq + Display,
+    IO: AsyncReadRent + AsyncWriteRent + Split,
     C: Clone,
 {
     fn clone(&self) -> Self {
@@ -247,12 +239,12 @@ where
     }
 }
 
-impl<
-        TC: Default,
-        K: Hash + Eq + Display + 'static,
-        IO: AsyncReadRent + AsyncWriteRent + Split,
-        B: Body<Data = Bytes> + 'static,
-    > PooledConnector<TC, K, IO, B>
+impl<TC, K, IO, B> PooledConnector<TC, K, IO, B>
+where
+    TC: Default,
+    K: Hash + Eq + Display + 'static,
+    IO: AsyncReadRent + AsyncWriteRent + Split,
+    B: Body<Data = Bytes> + 'static,
 {
     pub fn new(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         Self {
@@ -267,16 +259,14 @@ impl<
 
 impl<TC, K, IO, B> Connector<K> for PooledConnector<TC, K, IO, B>
 where
-    K: ToSocketAddrs + Hash + Eq + ToOwned<Owned = K> + Display + 'static + HttpVersion,
+    K: ToSocketAddrs + Hash + Eq + ToOwned<Owned = K> + Display + HttpVersion + 'static,
     TC: Connector<K, Connection = IO>,
-    IO: AsyncReadRent + AsyncWriteRent + Split + 'static + Unpin,
-    B: Body<Data = Bytes, Error = HttpError>
-        + From<RecvStream>
-        + From<FramedPayloadRecvr>
-        + 'static,
+    IO: AsyncReadRent + AsyncWriteRent + Split + Unpin + 'static,
+    B: Body<Data = Bytes, Error = HttpError> + 'static,
+    crate::Error: From<<TC as Connector<K>>::Error>,
 {
     type Connection = PooledConnection<K, B>;
-    type Error = TC::Error;
+    type Error = crate::Error;
     type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a;
 
     fn connect(&self, key: K) -> Self::ConnectionFuture<'_> {
@@ -290,45 +280,8 @@ where
             let pipe = self
                 .http_connector
                 .connect(io, key_owned.get_version())
-                .await
-                .expect("HTTP conn failed");
+                .await?;
             Ok(self.pool.link(key_owned, pipe))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Instant;
-
-    use monoio_http::common::body::HttpBody;
-
-    use super::*;
-
-    #[monoio::test_all(timer_enabled = true)]
-    async fn connect_tcp() {
-        let connector = DefaultTcpConnector::<&'static str, HttpBody>::new(
-            ClientGlobalConfig::default(),
-            ConnectionConfig::default(),
-        );
-        let begin = Instant::now();
-        let conn = connector
-            .connect("captive.apple.com:80")
-            .await
-            .expect("unable to get connection");
-        println!("First connection cost {}ms", begin.elapsed().as_millis());
-        drop(conn);
-
-        let begin = Instant::now();
-        let _ = connector
-            .connect("captive.apple.com:80")
-            .await
-            .expect("unable to get connection");
-        let spent = begin.elapsed().as_millis();
-        println!("Second connection cost {}ms", spent);
-        assert!(
-            spent <= 2,
-            "second connect spend too much time, maybe not with pool?"
-        );
     }
 }

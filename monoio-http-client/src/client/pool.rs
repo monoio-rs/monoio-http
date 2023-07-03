@@ -17,7 +17,7 @@ const DEFAULT_POOL_SIZE: usize = 32;
 const MAX_KEEPALIVE_CONNS: usize = 16384;
 
 use local_sync::oneshot;
-use monoio_http::common::request::Request;
+use monoio_http::common::{body::HttpBody, request::Request};
 
 use super::connection::{MultiSender, SingleSender, Transaction};
 
@@ -142,7 +142,7 @@ where
     pub async fn send_request(
         mut self,
         req: Request<B>,
-    ) -> Result<http::Response<B>, crate::Error> {
+    ) -> Result<http::Response<HttpBody>, crate::Error> {
         match self.pipe.take() {
             Some(mut pipe) => {
                 self.pipe = Some(pipe.clone());
@@ -321,7 +321,7 @@ impl<K: Hash + Eq + Display, B> PooledConnectionPipe<K, B> {
         &mut self,
         req: Request<B>,
         conn: PooledConnection<K, B>,
-    ) -> Result<http::Response<B>, crate::Error> {
+    ) -> Result<http::Response<HttpBody>, crate::Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
 
         let res = match self {

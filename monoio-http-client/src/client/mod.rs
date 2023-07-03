@@ -7,14 +7,10 @@ use std::{marker::PhantomData, rc::Rc};
 
 use bytes::Bytes;
 use http::{uri::Scheme, HeaderMap};
-use monoio_http::{
-    common::{
-        body::{Body, HttpBody},
-        error::HttpError,
-        response::Response,
-    },
-    h1::payload::FramedPayloadRecvr,
-    h2::RecvStream,
+use monoio_http::common::{
+    body::{Body, HttpBody},
+    error::HttpError,
+    response::Response,
 };
 
 use self::{
@@ -45,12 +41,12 @@ pub struct Client<
 #[derive(Default, Clone, PartialEq, Eq)]
 pub enum Proto {
     #[default]
-    Http1,
-    Http2,
-    Auto,
+    Http1, // HTTP1_1 only client
+    Http2, // HTTP2 only client
+    Auto,  // Uses version header in request
 }
 
-// HTTP1 & HTTP2 Connection specific
+// HTTP1 & HTTP2 Connection specific.
 #[derive(Default, Clone)]
 pub struct ConnectionConfig {
     pub proto: Proto,
@@ -58,7 +54,7 @@ pub struct ConnectionConfig {
 }
 
 // Global config applicable to
-// all connections
+// all connections maintained by client
 #[derive(Default, Clone)]
 pub struct ClientGlobalConfig {
     max_idle_connections: usize,
@@ -131,20 +127,14 @@ impl Builder {
 
     pub fn build_http1<B>(self) -> Client<B>
     where
-        B: Body<Data = Bytes, Error = HttpError>
-            + From<RecvStream>
-            + From<FramedPayloadRecvr>
-            + 'static,
+        B: Body<Data = Bytes, Error = HttpError> + 'static,
     {
         Client::new(self.global_config, self.connection_config)
     }
 
     pub fn build_http2<B>(mut self) -> Client<B>
     where
-        B: Body<Data = Bytes, Error = HttpError>
-            + From<RecvStream>
-            + From<FramedPayloadRecvr>
-            + 'static,
+        B: Body<Data = Bytes, Error = HttpError> + 'static,
     {
         self.http2_client();
         Client::new(self.global_config, self.connection_config)
@@ -152,10 +142,7 @@ impl Builder {
 
     pub fn build_auto<B>(mut self) -> Client<B>
     where
-        B: Body<Data = Bytes, Error = HttpError>
-            + From<RecvStream>
-            + From<FramedPayloadRecvr>
-            + 'static,
+        B: Body<Data = Bytes, Error = HttpError> + 'static,
     {
         self.http_auto();
         Client::new(self.global_config, self.connection_config)
@@ -200,10 +187,7 @@ impl Default for Client<HttpBody> {
 
 impl<B> Client<B>
 where
-    B: Body<Data = Bytes, Error = HttpError>
-        + From<RecvStream>
-        + From<FramedPayloadRecvr>
-        + 'static,
+    B: Body<Data = Bytes, Error = HttpError> + 'static,
 {
     fn new(g_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         let shared = Rc::new(ClientInner {
@@ -218,21 +202,22 @@ where
         }
     }
 
-    pub async fn send_request(&self, req: http::Request<B>) -> crate::Result<Response<B>> {
-        let mut key: Key = req.uri().try_into().unwrap();
+    pub async fn send_request(&self, req: http::Request<B>) -> crate::Result<Response<HttpBody>> {
+        let mut key: Key = req.uri().try_into()?;
         key.set_version(req.version());
 
         match req.uri().scheme() {
             Some(s) if s == &Scheme::HTTP => {
-                let conn = self.shared.http_connector.connect(key).await.unwrap();
+                let conn = self.shared.http_connector.connect(key).await?;
                 conn.send_request(req).await
             }
             #[cfg(any(feature = "rustls", feature = "native-tls"))]
             Some(s) if s == &Scheme::HTTPS => {
-                let conn = self.shared.https_connector.connect(key).await.unwrap();
+                let conn = self.shared.https_connector.connect(key).await?;
                 conn.send_request(req).await
             }
-            _ => panic!(),
+            // Key creation should error first
+            _ => unreachable!(),
         }
     }
 }
@@ -252,12 +237,12 @@ macro_rules! http_method {
 macro_rules! client_impl {
     ( $( $x:item )* ) => {
         #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<B: Body<Data = Bytes, Error = HttpError> + From<RecvStream> + From<FramedPayloadRecvr>, C> Client<B, C> {
+        impl<B: Body<Data = Bytes, Error = HttpError>, C> Client<B, C> {
             $($x)*
         }
 
         #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<B: Body<Data = Bytes, Error = HttpError> + From<RecvStream> + From<FramedPayloadRecvr>, C, CS> Client<B, C, CS> {
+        impl<B: Body<Data = Bytes, Error = HttpError>, C, CS> Client<B, C, CS> {
             $($x)*
         }
     };
@@ -292,7 +277,7 @@ impl<B: Body<Data = Bytes, Error = HttpError>, C> Client<B, C> {
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
 impl<B, C, CS> Client<B, C, CS>
 where
-    B: Body<Data = Bytes, Error = HttpError> + From<RecvStream> + From<FramedPayloadRecvr>,
+    B: Body<Data = Bytes, Error = HttpError>,
 {
     pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<B, C, CS>
     where

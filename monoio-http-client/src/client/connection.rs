@@ -8,13 +8,13 @@ use local_sync::{
 use monoio::io::{sink::SinkExt, stream::Stream, AsyncReadRent, AsyncWriteRent, Split};
 use monoio_http::{
     common::{
-        body::{Body, StreamHint},
+        body::{Body, HttpBody, StreamHint},
         error::HttpError,
         request::Request,
         response::Response,
     },
     h1::{codec::ClientCodec, payload::FramedPayloadRecvr},
-    h2::{RecvStream, SendStream},
+    h2::SendStream,
 };
 
 use super::pool::PooledConnection;
@@ -24,7 +24,7 @@ where
     K: Hash + Eq + Display,
 {
     pub req: Request<B>,
-    pub resp_tx: oneshot::Sender<crate::Result<Response<B>>>,
+    pub resp_tx: oneshot::Sender<crate::Result<Response<HttpBody>>>,
     pub conn: PooledConnection<K, B>,
 }
 
@@ -36,7 +36,7 @@ where
         self,
     ) -> (
         Request<B>,
-        oneshot::Sender<crate::Result<Response<B>>>,
+        oneshot::Sender<crate::Result<Response<HttpBody>>>,
         PooledConnection<K, B>,
     ) {
         (self.req, self.resp_tx, self.conn)
@@ -119,10 +119,17 @@ impl<IO, K, B> Http1ConnManager<IO, K, B>
 where
     IO: AsyncReadRent + AsyncWriteRent + Split,
     K: Hash + Eq + Display,
-    B: Body<Data = Bytes, Error = HttpError> + From<FramedPayloadRecvr>,
+    B: Body<Data = Bytes, Error = HttpError>,
 {
     pub async fn drive(&mut self) {
-        let mut codec = self.handle.take().unwrap();
+        let mut codec = match self.handle.take() {
+            Some(c) => c,
+            None => {
+                #[cfg(feature = "logging")]
+                tracing::error!("H1 conn manager: codec missing");
+                return;
+            }
+        };
 
         loop {
             if let Some(t) = self.req_rx.req_rx.recv().await {
@@ -130,7 +137,7 @@ where
                 let (parts, body) = request.into_parts();
 
                 #[cfg(feature = "logging")]
-                tracing::debug!("Response recv on h1 conn {:?}", parts);
+                tracing::debug!("H1 conn manager: Request {:?}", parts);
 
                 match codec.send_and_flush(Request::from_parts(parts, body)).await {
                     Ok(_) => match codec.next().await {
@@ -151,10 +158,7 @@ where
                                 hint: framed_payload.stream_hint(),
                             };
 
-                            #[cfg(feature = "logging")]
-                            tracing::debug!("Sending reply back from conn manager {:?}", parts);
-
-                            let resp = Response::from_parts(parts, B::from(framed_payload_rcvr));
+                            let resp = Response::from_parts(parts, framed_payload_rcvr.into());
                             let _ = resp_tx.send(Ok(resp));
 
                             while let Some(r) = framed_payload.next_data().await {
@@ -200,13 +204,13 @@ where
     }
 }
 
-pub struct StreamTask<B: Body> {
+pub struct StreamBodyTask<B: Body> {
     stream_pipe: SendStream<Bytes>,
     body: B,
     data_done: bool,
 }
 
-impl<B: Body<Data = Bytes>> StreamTask<B> {
+impl<B: Body<Data = Bytes>> StreamBodyTask<B> {
     fn new(stream_pipe: SendStream<Bytes>, body: B) -> Self {
         Self {
             stream_pipe,
@@ -228,17 +232,20 @@ impl<B: Body<Data = Bytes>> StreamTask<B> {
                         match cap {
                             Some(Ok(0)) => {}
                             Some(Ok(_)) => break,
-                            Some(Err(_e)) => {
+                            Some(Err(e)) => {
+                                #[cfg(feature = "logging")]
+                                tracing::error!("H2 StreamBodyTask {:?}", e);
                                 return;
-                                // return Poll::Ready(Err(crate::Error::new_body_write(e)))
                             }
                             None => {
                                 // None means the stream is no longer in a
                                 // streaming state, we either finished it
                                 // somehow, or the remote reset us.
                                 // return Poll::Ready(Err(crate::Error::new_body_write(
-                                //     "send stream capacity unexpectedly closed",
-                                // )));
+                                #[cfg(feature = "logging")]
+                                tracing::error!(
+                                    "H2 StreamBodyTask Send stream capacity unexpectedly closed",
+                                );
                                 return;
                             }
                         }
@@ -251,10 +258,8 @@ impl<B: Body<Data = Bytes>> StreamTask<B> {
                     .await;
 
                     if stream_rst {
-                        // debug!("stream received RST_STREAM: {:?}", reason);
-                        // return Poll::Ready(Err(crate::Error::new_body_write(::h2::Error::from(
-                        //     reason,
-                        // ))));
+                        #[cfg(feature = "logging")]
+                        tracing::error!("H2 StreamBodyTask stream reset");
                         return;
                     }
                 }
@@ -263,8 +268,6 @@ impl<B: Body<Data = Bytes>> StreamTask<B> {
                     StreamHint::None => {
                         let _ = self.stream_pipe.send_data(Bytes::new(), true);
                         self.data_done = true;
-                        #[cfg(feature = "logging")]
-                        tracing::debug!("H2 Stream task is done ");
                     }
                     StreamHint::Fixed => {
                         if let Some(Ok(data)) = self.body.next_data().await {
@@ -289,14 +292,13 @@ impl<B: Body<Data = Bytes>> StreamTask<B> {
                 .await;
 
                 if stream_rst {
-                    // debug!("stream received RST_STREAM: {:?}", reason);
-                    // return Poll::Ready(Err(crate::Error::new_body_write(::h2::Error::from(
-                    //     reason,
-                    // ))));
+                    #[cfg(feature = "logging")]
+                    tracing::error!("H2 StreamBodyTask stream reset");
                     return;
                 }
-                break;
+
                 // TODO: Handle trailer
+                break;
             }
         }
     }
@@ -310,18 +312,26 @@ pub struct Http2ConnManager<K: Hash + Eq + Display, B> {
 impl<K, B> Http2ConnManager<K, B>
 where
     K: Hash + Eq + Display,
-    B: Body<Data = Bytes> + From<RecvStream> + 'static,
+    B: Body<Data = Bytes> + 'static,
 {
     pub async fn drive(&mut self) {
         while let Some(t) = self.req_rx.req_rx.recv().await {
-            let (request, resp_tx, mut connection) = t.parts();
+            let (request, resp_tx, _connection) = t.parts();
             let (parts, body) = request.into_parts();
+
             #[cfg(feature = "logging")]
-            tracing::debug!("H2 conn manager recv request {:?}", parts);
+            tracing::debug!("H2 conn manager Request {:?}", parts);
 
             let request = http::request::Request::from_parts(parts, ());
             let handle = self.handle.clone();
-            let mut ready_handle = handle.ready().await.unwrap();
+            let mut ready_handle = match handle.ready().await {
+                Ok(r) => r,
+                Err(e) => {
+                    #[cfg(feature = "logging")]
+                    tracing::error!("H2 conn manager ready error: {:?}", e);
+                    break;
+                }
+            };
 
             let (resp_fut, send_stream) = match ready_handle.send_request(request, false) {
                 Ok(ok) => ok,
@@ -333,11 +343,8 @@ where
                 }
             };
 
-            #[cfg(feature = "logging")]
-            tracing::debug!("H2 conn manager sent request to server");
-
             monoio::spawn(async move {
-                let mut stream_task = StreamTask::new(send_stream, body);
+                let mut stream_task = StreamBodyTask::new(send_stream, body);
                 stream_task.drive().await;
             });
 
@@ -346,13 +353,13 @@ where
                     Ok(resp) => {
                         let (parts, body) = resp.into_parts();
                         #[cfg(feature = "logging")]
-                        tracing::debug!("Response from server {:?}", parts);
-                        let ret_resp = Response::from_parts(parts, B::from(body));
+                        tracing::debug!("H2 conn Response {:?}", parts);
+                        let ret_resp = Response::from_parts(parts, body.into());
                         let _ = resp_tx.send(Ok(ret_resp));
                     }
                     Err(e) => {
                         #[cfg(feature = "logging")]
-                        tracing::debug!("Response future returned error {:?}", e);
+                        tracing::debug!("H2 conn Response error {:?}", e);
                         let _ = resp_tx.send(Err(e.into()));
                     }
                 }

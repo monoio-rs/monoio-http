@@ -6,12 +6,8 @@ pub enum Error {
     FromUri(#[from] crate::client::key::FromUriError),
     #[error("http header error")]
     Http(#[from] http::Error),
-    #[error("encode error {0}")]
-    H1Encode(#[from] monoio_http::h1::codec::encoder::EncodeError),
     #[error("decode error {0}")]
     H1Decode(#[from] monoio_http::h1::codec::decoder::DecodeError),
-    #[error("receive body error {0}")]
-    Payload(#[from] monoio_http::h1::payload::PayloadError),
     #[error("io error {0}")]
     Io(#[from] std::io::Error),
     #[cfg(feature = "rustls")]

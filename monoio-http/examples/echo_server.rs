@@ -10,10 +10,7 @@ use monoio::{
 use monoio_http::{
     common::{error::HttpError, request::Request, response::Response},
     h1::{
-        codec::{
-            decoder::RequestDecoder,
-            encoder::{EncodeError, GenericEncoder},
-        },
+        codec::{decoder::RequestDecoder, encoder::GenericEncoder},
         payload::{FixedPayload, Payload},
     },
     util::spsc::{spsc_pair, SPSCReceiver},
