@@ -32,6 +32,7 @@ impl<K, B> Transaction<K, B>
 where
     K: Hash + Eq + Display,
 {
+    #[allow(clippy::type_complexity)]
     pub fn parts(
         self,
     ) -> (
@@ -131,74 +132,70 @@ where
             }
         };
 
-        loop {
-            if let Some(t) = self.req_rx.req_rx.recv().await {
-                let (request, resp_tx, mut connection) = t.parts();
-                let (parts, body) = request.into_parts();
+        while let Some(t) = self.req_rx.req_rx.recv().await {
+            let (request, resp_tx, mut connection) = t.parts();
+            let (parts, body) = request.into_parts();
 
-                #[cfg(feature = "logging")]
-                tracing::debug!("H1 conn manager: Request {:?}", parts);
+            #[cfg(feature = "logging")]
+            tracing::debug!("H1 conn manager: Request {:?}", parts);
 
-                match codec.send_and_flush(Request::from_parts(parts, body)).await {
-                    Ok(_) => match codec.next().await {
-                        Some(Ok(resp)) => {
-                            let (data_tx, data_rx) = local_sync::mpsc::unbounded::channel();
+            match codec.send_and_flush(Request::from_parts(parts, body)).await {
+                Ok(_) => match codec.next().await {
+                    Some(Ok(resp)) => {
+                        let (data_tx, data_rx) = local_sync::mpsc::unbounded::channel();
 
-                            let header_value = resp.headers().get(http::header::CONNECTION);
-                            let reuse_conn = match header_value {
-                                Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
-                                None => resp.version() != http::Version::HTTP_10,
-                            };
-                            connection.set_reuseable(reuse_conn);
+                        let header_value = resp.headers().get(http::header::CONNECTION);
+                        let reuse_conn = match header_value {
+                            Some(v) => !v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE),
+                            None => resp.version() != http::Version::HTTP_10,
+                        };
+                        connection.set_reuseable(reuse_conn);
 
-                            let (parts, body_builder) = resp.into_parts();
-                            let mut framed_payload = body_builder.with_io(codec);
-                            let framed_payload_rcvr = FramedPayloadRecvr {
-                                data_rx,
-                                hint: framed_payload.stream_hint(),
-                            };
+                        let (parts, body_builder) = resp.into_parts();
+                        let mut framed_payload = body_builder.with_io(codec);
+                        let framed_payload_rcvr = FramedPayloadRecvr {
+                            data_rx,
+                            hint: framed_payload.stream_hint(),
+                        };
 
-                            let resp = Response::from_parts(parts, framed_payload_rcvr.into());
-                            let _ = resp_tx.send(Ok(resp));
+                        let resp = Response::from_parts(parts, framed_payload_rcvr.into());
+                        let _ = resp_tx.send(Ok(resp));
 
-                            while let Some(r) = framed_payload.next_data().await {
-                                let _ = data_tx.send(Some(r));
-                            }
-
-                            // At this point we have streamed the payload and the codec can be
-                            // reused. Drop the connection, which will
-                            // add it back to the pool.
-
-                            drop(connection);
-                            codec = framed_payload.get_source();
+                        while let Some(r) = framed_payload.next_data().await {
+                            let _ = data_tx.send(Some(r));
                         }
-                        Some(Err(e)) => {
-                            #[cfg(feature = "logging")]
-                            tracing::error!("decode upstream response error {:?}", e);
-                            connection.set_reuseable(false);
-                            let _ = resp_tx.send(Err(crate::Error::H1Decode(e)));
-                            break;
-                        }
-                        None => {
-                            #[cfg(feature = "logging")]
-                            tracing::error!("upstream return eof");
-                            connection.set_reuseable(false);
-                            let _ = resp_tx.send(Err(crate::Error::Io(std::io::Error::new(
-                                std::io::ErrorKind::UnexpectedEof,
-                                "unexpected eof when read response",
-                            ))));
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        #[cfg(feature = "logging")]
-                        tracing::error!("send upstream request error {:?}", e);
-                        connection.set_reuseable(false);
-                        let _ = resp_tx.send(Err(e.into()));
+
+                        // At this point we have streamed the payload and the codec can be
+                        // reused. Drop the connection, which will
+                        // add it back to the pool.
+
+                        drop(connection);
+                        codec = framed_payload.get_source();
                     }
+                    Some(Err(e)) => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("decode upstream response error {:?}", e);
+                        connection.set_reuseable(false);
+                        let _ = resp_tx.send(Err(crate::Error::H1Decode(e)));
+                        break;
+                    }
+                    None => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("upstream return eof");
+                        connection.set_reuseable(false);
+                        let _ = resp_tx.send(Err(crate::Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "unexpected eof when read response",
+                        ))));
+                        break;
+                    }
+                },
+                Err(e) => {
+                    #[cfg(feature = "logging")]
+                    tracing::error!("send upstream request error {:?}", e);
+                    connection.set_reuseable(false);
+                    let _ = resp_tx.send(Err(e.into()));
                 }
-            } else {
-                break;
             }
         }
     }
@@ -232,9 +229,9 @@ impl<B: Body<Data = Bytes>> StreamBodyTask<B> {
                         match cap {
                             Some(Ok(0)) => {}
                             Some(Ok(_)) => break,
-                            Some(Err(e)) => {
+                            Some(Err(_e)) => {
                                 #[cfg(feature = "logging")]
-                                tracing::error!("H2 StreamBodyTask {:?}", e);
+                                tracing::error!("H2 StreamBodyTask {_e:?}");
                                 return;
                             }
                             None => {
@@ -326,9 +323,9 @@ where
             let handle = self.handle.clone();
             let mut ready_handle = match handle.ready().await {
                 Ok(r) => r,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(feature = "logging")]
-                    tracing::error!("H2 conn manager ready error: {:?}", e);
+                    tracing::error!("H2 conn manager ready error: {_e:?}");
                     break;
                 }
             };
@@ -337,7 +334,7 @@ where
                 Ok(ok) => ok,
                 Err(e) => {
                     #[cfg(feature = "logging")]
-                    tracing::debug!("client send request error: {}", e);
+                    tracing::debug!("client send request error: {e}");
                     let _ = resp_tx.send(Err(e.into()));
                     break;
                 }
@@ -353,13 +350,13 @@ where
                     Ok(resp) => {
                         let (parts, body) = resp.into_parts();
                         #[cfg(feature = "logging")]
-                        tracing::debug!("H2 conn Response {:?}", parts);
+                        tracing::debug!("H2 conn Response {parts:?}");
                         let ret_resp = Response::from_parts(parts, body.into());
                         let _ = resp_tx.send(Ok(ret_resp));
                     }
                     Err(e) => {
                         #[cfg(feature = "logging")]
-                        tracing::debug!("H2 conn Response error {:?}", e);
+                        tracing::debug!("H2 conn Response error {e:?}");
                         let _ = resp_tx.send(Err(e.into()));
                     }
                 }

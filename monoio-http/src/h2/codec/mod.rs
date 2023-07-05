@@ -9,9 +9,7 @@ use std::{
 };
 
 use bytes::Buf;
-use monoio::io::stream::Stream;
-// use monoio::io::{AsyncReadRent, AsyncWriteRent};
-use monoio::io::{AsyncReadRent, AsyncWriteRent};
+use monoio::io::{stream::Stream, AsyncReadRent, AsyncWriteRent};
 use monoio_codec::length_delimited;
 use monoio_compat::box_future::MaybeArmedBoxFuture;
 
@@ -24,8 +22,9 @@ use crate::h2::{
 
 #[derive(Debug)]
 pub struct Codec<T, B> {
-    inner: FramedRead<FramedWrite<T, B>>,
     stream_fut: MaybeArmedBoxFuture<Option<Result<Frame, Error>>>,
+    // Put it at the last to make sure futures depending on it drop first.
+    inner: FramedRead<FramedWrite<T, B>>,
 }
 
 impl<T, B> Codec<T, B>
@@ -168,7 +167,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.stream_fut.armed() {
             let stream = unsafe {
-                #[allow(clippy::cast_ref_to_mut)]
+                #[allow(cast_ref_to_mut)]
                 &mut *(&self.inner as *const FramedRead<FramedWrite<T, B>>
                     as *mut FramedRead<FramedWrite<T, B>>)
             };

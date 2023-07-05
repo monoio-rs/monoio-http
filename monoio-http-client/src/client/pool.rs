@@ -331,9 +331,9 @@ impl<K: Hash + Eq + Display, B> PooledConnectionPipe<K, B> {
 
         match res {
             Ok(_) => {}
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(feature = "logging")]
-                tracing::error!("Request send to conn manager failed {:?}", e);
+                tracing::error!("Request send to conn manager failed {_e:?}");
                 return Err(crate::error::Error::ConnManagerReqSendError);
             }
         }
