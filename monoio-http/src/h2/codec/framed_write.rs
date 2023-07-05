@@ -4,11 +4,10 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-// use futures_util::FutureExt;
-use monoio::BufResult;
 use monoio::{
     buf::{IoBufMut, IoVecBufMut},
     io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt},
+    BufResult,
 };
 use monoio_compat::box_future::MaybeArmedBoxFuture;
 
@@ -28,16 +27,13 @@ macro_rules! limited_write_buf {
 
 #[derive(Debug)]
 pub struct FramedWrite<T, B> {
-    /// Upstream `AsyncWriteRent`
-    inner: T,
-
     encoder: Encoder<B>,
-
     write_fut: MaybeArmedBoxFuture<BufResult<usize, Bytes>>,
-
     flush_fut: MaybeArmedBoxFuture<io::Result<()>>,
-
     shut_fut: MaybeArmedBoxFuture<io::Result<()>>,
+    /// Upstream `AsyncWriteRent`
+    // Put it at the last to make sure futures depending on it drop first.
+    inner: T,
 }
 
 #[derive(Debug)]

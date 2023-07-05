@@ -318,8 +318,9 @@ struct Flush<T, B> {
 
 /// Read the client connection preface
 struct ReadPreface<T, B> {
-    codec: Option<Codec<T, B>>,
     read_fut: MaybeArmedBoxFuture<BufResult<usize, BytesMut>>, //    pos: usize,
+    // Put it at the last to make sure futures depending on it drop first.
+    codec: Option<Codec<T, B>>,
 }
 
 #[derive(Debug)]
@@ -1234,6 +1235,7 @@ where
 
         if !self.read_fut.armed() {
             let io = self.inner_mut();
+
             #[allow(cast_ref_to_mut)]
             let io = unsafe { &mut *(io as *const T as *mut T) };
             self.read_fut.arm_future(io.read_exact(owned_buf));

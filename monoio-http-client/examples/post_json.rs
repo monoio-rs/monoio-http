@@ -8,7 +8,7 @@ async fn main() {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let client = Client::new();
+    let client = Client::default();
     let payload = JsonRequest {
         name: "ihciah".to_string(),
         age: 27,

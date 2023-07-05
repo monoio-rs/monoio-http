@@ -8,12 +8,9 @@ use monoio::{
     net::{TcpListener, TcpStream},
 };
 use monoio_http::{
-    common::{request::Request, response::Response},
+    common::{error::HttpError, request::Request, response::Response},
     h1::{
-        codec::{
-            decoder::RequestDecoder,
-            encoder::{EncodeError, GenericEncoder},
-        },
+        codec::{decoder::RequestDecoder, encoder::GenericEncoder},
         payload::{FixedPayload, Payload},
     },
     util::spsc::{spsc_pair, SPSCReceiver},
@@ -69,8 +66,8 @@ async fn handle_connection(stream: TcpStream) {
 
 async fn handle_task(
     mut receiver: SPSCReceiver<Request>,
-    mut sender: impl Sink<Response, Error = impl Into<EncodeError>>,
-) -> Result<(), EncodeError> {
+    mut sender: impl Sink<Response, Error = impl Into<HttpError>>,
+) -> Result<(), HttpError> {
     loop {
         let request = match receiver.recv().await {
             Some(r) => r,

@@ -2,8 +2,8 @@
 A user friendly http client for Monoio runtime.
 
 ## Features
-- [ ] TLS support
-- [ ] Connection pooling
+- [x] TLS support
+- [x] Connection pooling
 - [ ] Automatic headers injection
 - [ ] Cookie jar support
 - [ ] Automatic redirects

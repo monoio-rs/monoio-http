@@ -2,16 +2,19 @@ use std::{
     cell::UnsafeCell,
     io,
     rc::Rc,
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
 use bytes::Buf;
 use monoio::io::AsyncWriteRent;
 
-use crate::h2::{
-    codec::Codec,
-    frame::Ping,
-    proto::{self, PingPayload},
+use crate::{
+    common::waker::LocalWaker,
+    h2::{
+        codec::Codec,
+        frame::Ping,
+        proto::{self, PingPayload},
+    },
 };
 
 /// Acknowledges ping requests from the remote.
@@ -32,9 +35,9 @@ struct UserPingsRx(Rc<UnsafeCell<UserPingsInner>>);
 struct UserPingsInner {
     state: usize,
     /// Task to wake up the main `Connection`.
-    ping_task: Option<Waker>,
+    ping_task: LocalWaker,
     /// Task to wake up `share::PingPong::poll_pong`.
-    pong_task: Option<Waker>,
+    pong_task: LocalWaker,
 }
 
 #[derive(Debug)]
@@ -81,8 +84,8 @@ impl PingPong {
 
         let user_pings = Rc::new(UnsafeCell::new(UserPingsInner {
             state: USER_STATE_EMPTY,
-            ping_task: None,
-            pong_task: None,
+            ping_task: LocalWaker::new(),
+            pong_task: LocalWaker::new(),
         }));
         self.user_pings = Some(UserPingsRx(user_pings.clone()));
         Some(UserPings(user_pings))
@@ -182,18 +185,17 @@ impl PingPong {
                 ping.sent = true;
             }
         } else if let Some(ref users) = self.user_pings {
-            let user_pings = unsafe { &mut *users.0.get() };
-            if user_pings.state == USER_STATE_PENDING_PING {
+            let inner = unsafe { &mut *users.0.get() };
+            if inner.state == USER_STATE_PENDING_PING {
                 if !dst.poll_ready(cx)?.is_ready() {
                     return Poll::Pending;
                 }
 
                 dst.buffer(Ping::new(Ping::USER).into())
                     .expect("invalid ping frame");
-                user_pings.state = USER_STATE_PENDING_PONG;
+                inner.state = USER_STATE_PENDING_PONG;
             } else {
-                user_pings.ping_task = Some(cx.waker().clone());
-                // users.0.ping_task.register(cx.waker());
+                inner.ping_task.register(cx.waker());
             }
         }
 
@@ -211,15 +213,15 @@ impl ReceivedPing {
 
 impl UserPings {
     pub(crate) fn send_ping(&self) -> Result<(), Option<proto::Error>> {
-        let user_pings = unsafe { &mut *self.0.get() };
-        let prev = user_pings.state; // current
+        let inner = unsafe { &mut *self.0.get() };
+        let prev = inner.state;
         if prev == USER_STATE_EMPTY {
-            user_pings.state = USER_STATE_PENDING_PING; // new
+            inner.state = USER_STATE_PENDING_PING
         }
 
         match prev {
             USER_STATE_EMPTY => {
-                user_pings.ping_task.take().unwrap().wake();
+                inner.ping_task.wake();
                 Ok(())
             }
             USER_STATE_CLOSED => Err(Some(broken_pipe().into())),
@@ -233,11 +235,12 @@ impl UserPings {
     pub(crate) fn poll_pong(&self, cx: &mut Context) -> Poll<Result<(), proto::Error>> {
         // Must register before checking state, in case state were to change
         // before we could register, and then the ping would just be lost.
-        let user_pings = unsafe { &mut *self.0.get() };
-        user_pings.pong_task = Some(cx.waker().clone());
-        let prev = user_pings.state; // current
+        let inner = unsafe { &mut *self.0.get() };
+        inner.pong_task.register(cx.waker());
+
+        let prev = inner.state;
         if prev == USER_STATE_RECEIVED_PONG {
-            user_pings.state = USER_STATE_EMPTY; // new
+            inner.state = USER_STATE_EMPTY;
         }
 
         match prev {
@@ -252,14 +255,14 @@ impl UserPings {
 
 impl UserPingsRx {
     fn receive_pong(&self) -> bool {
-        let user_pings = unsafe { &mut *self.0.get() };
-        let prev = user_pings.state; // current
+        let inner = unsafe { &mut *self.0.get() };
+        let prev = inner.state;
         if prev == USER_STATE_PENDING_PONG {
-            user_pings.state = USER_STATE_RECEIVED_PONG; // new
+            inner.state = USER_STATE_RECEIVED_PONG;
         }
 
         if prev == USER_STATE_PENDING_PONG {
-            user_pings.pong_task.take().unwrap().wake();
+            inner.pong_task.wake();
             true
         } else {
             false
@@ -269,9 +272,9 @@ impl UserPingsRx {
 
 impl Drop for UserPingsRx {
     fn drop(&mut self) {
-        let user_pings = unsafe { &mut *self.0.get() };
-        user_pings.state = USER_STATE_CLOSED;
-        user_pings.pong_task.take().unwrap().wake();
+        let inner = unsafe { &mut *self.0.get() };
+        inner.state = USER_STATE_CLOSED;
+        inner.pong_task.wake();
     }
 }
 

@@ -1,9 +1,6 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, StatusCode, Version};
-use monoio_http::{
-    common::body::{Body, StreamHint},
-    h1::payload::BoxedFramedPayload,
-};
+use monoio_http::common::body::{BodyExt, HttpBody};
 
 pub struct ClientResponse {
     /// The response's status
@@ -15,11 +12,11 @@ pub struct ClientResponse {
     /// The response's extensions
     extensions: Extensions,
     /// Payload
-    body: BoxedFramedPayload,
+    body: HttpBody,
 }
 
 impl ClientResponse {
-    pub fn new(inner: http::Response<BoxedFramedPayload>) -> Self {
+    pub fn new(inner: http::Response<HttpBody>) -> Self {
         let (head, body) = inner.into_parts();
         Self {
             status: head.status,
@@ -67,26 +64,20 @@ impl ClientResponse {
     /// Get the full response body as `Bytes`.
     pub async fn bytes(self) -> crate::Result<Bytes> {
         let mut body = self.body;
-        if body.stream_hint() == StreamHint::None {
-            return Ok(Bytes::new());
-        }
-
-        let mut data = BytesMut::new();
-        while let Some(res) = body.next_data().await {
-            data.extend(res?);
-        }
-        Ok(data.freeze())
+        body.bytes().await.map_err(Into::into)
     }
 
     /// Get raw body(Payload).
-    pub fn raw_body(self) -> BoxedFramedPayload {
+    pub fn raw_body(self) -> HttpBody {
         self.body
     }
 
     /// Try to deserialize the response body as JSON.
-    // TODO(chihai): use from_reader
-    pub async fn json<T: serde::de::DeserializeOwned>(self) -> crate::Result<T> {
-        let bytes = self.bytes().await?;
+    // Note: using from_reader to read discontinuous data pays more
+    // than using from_slice. So here we read the entire content into
+    // a Bytes and call from_slice.
+    pub async fn json<T: serde::de::DeserializeOwned>(mut self) -> crate::Result<T> {
+        let bytes = self.body.bytes().await?;
         let d = serde_json::from_slice(&bytes)?;
         Ok(d)
     }

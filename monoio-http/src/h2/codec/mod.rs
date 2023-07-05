@@ -9,9 +9,7 @@ use std::{
 };
 
 use bytes::Buf;
-use monoio::io::stream::Stream;
-// use monoio::io::{AsyncReadRent, AsyncWriteRent};
-use monoio::io::{AsyncReadRent, AsyncWriteRent};
+use monoio::io::{stream::Stream, AsyncReadRent, AsyncWriteRent};
 use monoio_codec::length_delimited;
 use monoio_compat::box_future::MaybeArmedBoxFuture;
 
@@ -24,8 +22,9 @@ use crate::h2::{
 
 #[derive(Debug)]
 pub struct Codec<T, B> {
-    inner: FramedRead<FramedWrite<T, B>>,
     stream_fut: MaybeArmedBoxFuture<Option<Result<Frame, Error>>>,
+    // Put it at the last to make sure futures depending on it drop first.
+    inner: FramedRead<FramedWrite<T, B>>,
 }
 
 impl<T, B> Codec<T, B>
@@ -167,8 +166,8 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.stream_fut.armed() {
-            #[allow(cast_ref_to_mut)]
             let stream = unsafe {
+                #[allow(cast_ref_to_mut)]
                 &mut *(&self.inner as *const FramedRead<FramedWrite<T, B>>
                     as *mut FramedRead<FramedWrite<T, B>>)
             };
@@ -178,34 +177,6 @@ where
         Poll::Ready(ready!(self.stream_fut.poll(cx)))
     }
 }
-
-// Sink trait is not being used as of now in H2 crate. Frames are wriiten via codec's own APIs
-// impl<T, B> Sink<Frame<B>> for Codec<T, B>
-// where
-//     T: AsyncWriteRent + Unpin,
-//     B: Buf,
-// {
-//     type Error = SendError;
-
-//     fn start_send(mut self: Pin<&mut Self>, item: Frame<B>) -> Result<(), Self::Error> {
-//         Codec::buffer(&mut self, item)?;
-//         Ok(())
-//     }
-//     /// Returns `Ready` when the codec can buffer a frame
-//     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(),
-// Self::Error>> {         self.framed_write().poll_ready(cx).map_err(Into::into)
-//     }
-
-//     /// Flush buffered data to the wire
-//     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(),
-// Self::Error>> {         self.framed_write().flush(cx).map_err(Into::into)
-//     }
-
-//     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(),
-// Self::Error>> {         ready!(self.shutdown(cx))?;
-//         Poll::Ready(Ok(()))
-//     }
-// }
 
 // TODO: remove (or improve) this
 impl<T> From<T> for Codec<T, bytes::Bytes>

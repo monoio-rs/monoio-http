@@ -181,7 +181,8 @@ where
         T: AsyncWriteRent + Unpin + 'static,
     {
         let me = unsafe { &mut *self.inner.get() };
-        me.poll_complete(self.send_buffer.clone(), cx, dst)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.poll_complete(send_buffer, cx, dst)
     }
 
     pub fn apply_remote_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
@@ -307,28 +308,33 @@ where
 impl<B> DynStreams<'_, B> {
     pub fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_headers(self.peer, self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_headers(self.peer, send_buffer, frame)
     }
 
     pub fn recv_data(&mut self, frame: frame::Data) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_data(self.peer, self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_data(self.peer, send_buffer, frame)
     }
 
     pub fn recv_reset(&mut self, frame: frame::Reset) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_reset(self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_reset(send_buffer, frame)
     }
 
     /// Notify all streams that a connection-level error happened.
     pub fn handle_error(&mut self, err: proto::Error) -> StreamId {
         let me = unsafe { &mut *self.inner.get() };
-        me.handle_error(self.send_buffer.clone(), err)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.handle_error(send_buffer, err)
     }
 
     pub fn recv_go_away(&mut self, frame: &frame::GoAway) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_go_away(self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_go_away(send_buffer, frame)
     }
 
     pub fn last_processed_id(&self) -> StreamId {
@@ -338,22 +344,26 @@ impl<B> DynStreams<'_, B> {
 
     pub fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_window_update(self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_window_update(send_buffer, frame)
     }
 
     pub fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_push_promise(self.send_buffer.clone(), frame)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_push_promise(send_buffer, frame)
     }
 
     pub fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
         let me = unsafe { &mut *self.inner.get() };
-        me.recv_eof(self.send_buffer.clone(), clear_pending_accept)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.recv_eof(send_buffer, clear_pending_accept)
     }
 
     pub fn send_reset(&mut self, id: StreamId, reason: Reason) {
         let me = unsafe { &mut *self.inner.get() };
-        me.send_reset(self.send_buffer.clone(), id, reason)
+        let send_buffer = unsafe { &mut *self.send_buffer.get() };
+        me.send_reset(send_buffer, id, reason)
     }
 
     pub fn send_go_away(&mut self, last_processed_id: StreamId) {
@@ -380,7 +390,7 @@ impl Inner {
     fn recv_headers<B>(
         &mut self,
         peer: peer::Dyn,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: frame::Headers,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -446,7 +456,7 @@ impl Inner {
         }
 
         let actions = &mut self.actions;
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         self.counts.transition(stream, |counts, stream| {
             tracing::trace!(
@@ -497,7 +507,7 @@ impl Inner {
     fn recv_data<B>(
         &mut self,
         peer: peer::Dyn,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: frame::Data,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -535,7 +545,7 @@ impl Inner {
         };
 
         let actions = &mut self.actions;
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         self.counts.transition(stream, |counts, stream| {
             let sz = frame.payload().len();
@@ -555,7 +565,7 @@ impl Inner {
 
     fn recv_reset<B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: frame::Reset,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -588,7 +598,7 @@ impl Inner {
             }
         };
 
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         let actions = &mut self.actions;
 
@@ -602,12 +612,12 @@ impl Inner {
 
     fn recv_window_update<B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: frame::WindowUpdate,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
 
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         if id.is_zero() {
             self.actions
@@ -638,14 +648,10 @@ impl Inner {
         Ok(())
     }
 
-    fn handle_error<B>(
-        &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
-        err: proto::Error,
-    ) -> StreamId {
+    fn handle_error<B>(&mut self, send_buffer: &mut SendBuffer<B>, err: proto::Error) -> StreamId {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         let last_processed_id = actions.recv.last_processed_id();
 
@@ -663,12 +669,12 @@ impl Inner {
 
     fn recv_go_away<B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: &frame::GoAway,
     ) -> Result<(), Error> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         let last_stream_id = frame.last_stream_id();
 
@@ -692,7 +698,7 @@ impl Inner {
 
     fn recv_push_promise<B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         frame: frame::PushPromise,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -762,7 +768,7 @@ impl Inner {
                 match stream_valid {
                     Ok(()) => Ok(Some(stream.key())),
                     _ => {
-                        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+                        let send_buffer = &mut send_buffer.inner;
                         actions
                             .reset_on_recv_stream_err(send_buffer, stream, counts, stream_valid)
                             .map(|()| None)
@@ -785,12 +791,12 @@ impl Inner {
 
     fn recv_eof<B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         clear_pending_accept: bool,
     ) -> Result<(), ()> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         if actions.conn_error.is_none() {
             actions.conn_error = Some(
@@ -820,7 +826,7 @@ impl Inner {
 
     fn poll_complete<T, B>(
         &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+        send_buffer: &mut SendBuffer<B>,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
     ) -> Poll<io::Result<()>>
@@ -828,7 +834,7 @@ impl Inner {
         T: AsyncWriteRent + Unpin + 'static,
         B: Buf,
     {
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
 
         // Send WINDOW_UPDATE frames first
         //
@@ -854,12 +860,7 @@ impl Inner {
         Poll::Ready(Ok(()))
     }
 
-    fn send_reset<B>(
-        &mut self,
-        send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
-        id: StreamId,
-        reason: Reason,
-    ) {
+    fn send_reset<B>(&mut self, send_buffer: &mut SendBuffer<B>, id: StreamId, reason: Reason) {
         let key = match self.store.find_entry(id) {
             Entry::Occupied(e) => e.key(),
             Entry::Vacant(e) => {
@@ -890,7 +891,7 @@ impl Inner {
         };
 
         let stream = self.store.resolve(key);
-        let send_buffer = &mut unsafe { &mut *send_buffer.get() }.inner;
+        let send_buffer = &mut send_buffer.inner;
         self.actions.send_reset(
             stream,
             reason,

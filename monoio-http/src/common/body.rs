@@ -1,10 +1,10 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
+use bytes::{Bytes, BytesMut};
 use futures_core::Future;
-use monoio::{buf::IoBuf, macros::support::poll_fn};
+use monoio::buf::IoBuf;
+use smallvec::SmallVec;
+
+use super::error::HttpError;
+use crate::{h1::payload::FramedPayloadRecvr, h2::RecvStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamHint {
@@ -24,30 +24,131 @@ pub trait Body {
     fn stream_hint(&self) -> StreamHint;
 }
 
-pub trait OwnedBody {
-    type Data: IoBuf;
-    type Error;
+pub type Chunks = SmallVec<[Bytes; 16]>;
 
-    fn poll_next_data(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>>;
-    fn stream_hint(&self) -> StreamHint;
+pub trait BodyExt: Body {
+    type BytesFuture<'a>: Future<Output = Result<Bytes, Self::Error>>
+    where
+        Self: 'a;
+    type ChunksFuture<'a>: Future<Output = Result<Chunks, Self::Error>>
+    where
+        Self: 'a;
+    /// Return continues memory
+    fn bytes(&mut self) -> Self::BytesFuture<'_>;
+    /// Return bytes array
+    fn chunks(&mut self) -> Self::ChunksFuture<'_>;
 }
 
-impl<T: OwnedBody + Unpin> Body for T {
-    type Data = <T as OwnedBody>::Data;
-    type Error = <T as OwnedBody>::Error;
-    type DataFuture<'a> = impl Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
+impl<T: Body<Data = Bytes>> BodyExt for T {
+    type BytesFuture<'a> = impl Future<Output = Result<Bytes, Self::Error>> + 'a
+    where
+        Self: 'a;
+    type ChunksFuture<'a> = impl Future<Output = Result<Chunks, Self::Error>> + 'a
     where
         Self: 'a;
 
+    fn bytes(&mut self) -> Self::BytesFuture<'_> {
+        async move {
+            match self.stream_hint() {
+                StreamHint::None => Ok(Bytes::new()),
+                StreamHint::Fixed => self
+                    .next_data()
+                    .await
+                    .expect("unable to read chunk for fixed body"),
+                StreamHint::Stream => {
+                    let mut data = BytesMut::new();
+                    while let Some(chunk) = self.next_data().await {
+                        data.extend_from_slice(&chunk?);
+                    }
+                    Ok(data.freeze())
+                }
+            }
+        }
+    }
+
+    fn chunks(&mut self) -> Self::ChunksFuture<'_> {
+        async move {
+            match self.stream_hint() {
+                StreamHint::None => Ok(Chunks::new()),
+                StreamHint::Fixed => {
+                    let mut chunks = Chunks::new();
+                    let b = self
+                        .next_data()
+                        .await
+                        .expect("unable to read chunk for fixed body")?;
+                    chunks.push(b);
+                    Ok(chunks)
+                }
+                StreamHint::Stream => {
+                    let mut chunks = Chunks::new();
+                    while let Some(chunk) = self.next_data().await {
+                        chunks.push(chunk?);
+                    }
+                    Ok(chunks)
+                }
+            }
+        }
+    }
+}
+
+pub enum HttpBody {
+    Ready(Option<Bytes>),
+    H1(FramedPayloadRecvr),
+    H2(RecvStream),
+}
+
+impl From<FramedPayloadRecvr> for HttpBody {
+    fn from(p: FramedPayloadRecvr) -> Self {
+        Self::H1(p)
+    }
+}
+
+impl From<RecvStream> for HttpBody {
+    fn from(p: RecvStream) -> Self {
+        Self::H2(p)
+    }
+}
+
+impl Default for HttpBody {
+    fn default() -> Self {
+        Self::Ready(None)
+    }
+}
+
+impl Body for HttpBody {
+    type Data = Bytes;
+    type Error = HttpError;
+    type DataFuture<'a> = impl Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a where
+        Self: 'a;
+
     fn next_data(&mut self) -> Self::DataFuture<'_> {
-        let mut pinned = Pin::new(self);
-        poll_fn(move |cx| pinned.as_mut().poll_next_data(cx))
+        async move {
+            match self {
+                Self::Ready(b) => b.take().map(Result::Ok),
+                Self::H1(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+                Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+            }
+        }
     }
 
     fn stream_hint(&self) -> StreamHint {
-        <T as OwnedBody>::stream_hint(self)
+        match self {
+            Self::Ready(Some(_)) => StreamHint::Fixed,
+            Self::Ready(None) => StreamHint::None,
+            Self::H1(ref p) => p.stream_hint(),
+            Self::H2(ref p) => p.stream_hint(),
+        }
+    }
+}
+
+pub trait FixedBody {
+    type BodyType: Body;
+    fn fixed_body(data: Option<Bytes>) -> Self::BodyType;
+}
+
+impl FixedBody for HttpBody {
+    type BodyType = Self;
+    fn fixed_body(data: Option<Bytes>) -> Self::BodyType {
+        Self::Ready(data)
     }
 }
