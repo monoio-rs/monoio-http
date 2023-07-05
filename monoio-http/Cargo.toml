@@ -1,5 +1,9 @@
 [package]
-authors = ["ChiHai <ihciah@gmail.com>"]
+authors = [
+    "ChiHai <ihciah@gmail.com>",
+    "Harsha <har23k@gmail.com>",
+    "Rain <rain-jiang@outlook.com>",
+]
 description = "Low level http implementation for Monoio."
 edition = "2021"
 keywords = ["monoio", "http", "async"]

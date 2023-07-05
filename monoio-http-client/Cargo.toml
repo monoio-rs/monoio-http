@@ -1,5 +1,9 @@
 [package]
-authors = ["ChiHai <ihciah@gmail.com>"]
+authors = [
+    "ChiHai <ihciah@gmail.com>",
+    "Harsha <har23k@gmail.com>",
+    "Rain <rain-jiang@outlook.com>",
+]
 description = "Http client for Monoio."
 edition = "2021"
 license = "MIT/Apache-2.0"
