@@ -73,7 +73,9 @@ impl ClientResponse {
     }
 
     /// Try to deserialize the response body as JSON.
-    // TODO(chihai): use from_reader
+    // Note: using from_reader to read discontinuous data pays more
+    // than using from_slice. So here we read the entire content into
+    // a Bytes and call from_slice.
     pub async fn json<T: serde::de::DeserializeOwned>(mut self) -> crate::Result<T> {
         let bytes = self.body.bytes().await?;
         let d = serde_json::from_slice(&bytes)?;

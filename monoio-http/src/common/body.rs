@@ -1,6 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use futures_core::Future;
 use monoio::buf::IoBuf;
+use smallvec::SmallVec;
 
 use super::error::HttpError;
 use crate::{h1::payload::FramedPayloadRecvr, h2::RecvStream};
@@ -23,16 +24,26 @@ pub trait Body {
     fn stream_hint(&self) -> StreamHint;
 }
 
+pub type Chunks = SmallVec<[Bytes; 16]>;
+
 pub trait BodyExt: Body {
     type BytesFuture<'a>: Future<Output = Result<Bytes, Self::Error>>
     where
         Self: 'a;
+    type ChunksFuture<'a>: Future<Output = Result<Chunks, Self::Error>>
+    where
+        Self: 'a;
     /// Return continues memory
     fn bytes(&mut self) -> Self::BytesFuture<'_>;
+    /// Return bytes array
+    fn chunks(&mut self) -> Self::ChunksFuture<'_>;
 }
 
 impl<T: Body<Data = Bytes>> BodyExt for T {
     type BytesFuture<'a> = impl Future<Output = Result<Bytes, Self::Error>> + 'a
+    where
+        Self: 'a;
+    type ChunksFuture<'a> = impl Future<Output = Result<Chunks, Self::Error>> + 'a
     where
         Self: 'a;
 
@@ -50,6 +61,30 @@ impl<T: Body<Data = Bytes>> BodyExt for T {
                         data.extend_from_slice(&chunk?);
                     }
                     Ok(data.freeze())
+                }
+            }
+        }
+    }
+
+    fn chunks(&mut self) -> Self::ChunksFuture<'_> {
+        async move {
+            match self.stream_hint() {
+                StreamHint::None => Ok(Chunks::new()),
+                StreamHint::Fixed => {
+                    let mut chunks = Chunks::new();
+                    let b = self
+                        .next_data()
+                        .await
+                        .expect("unable to read chunk for fixed body")?;
+                    chunks.push(b);
+                    Ok(chunks)
+                }
+                StreamHint::Stream => {
+                    let mut chunks = Chunks::new();
+                    while let Some(chunk) = self.next_data().await {
+                        chunks.push(chunk?);
+                    }
+                    Ok(chunks)
                 }
             }
         }
