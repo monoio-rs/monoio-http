@@ -1,6 +1,6 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use http::{Extensions, HeaderMap, HeaderValue, StatusCode, Version};
-use monoio_http::common::body::{Body, HttpBody, StreamHint};
+use monoio_http::common::body::{BodyExt, HttpBody};
 
 pub struct ClientResponse {
     /// The response's status
@@ -64,15 +64,7 @@ impl ClientResponse {
     /// Get the full response body as `Bytes`.
     pub async fn bytes(self) -> crate::Result<Bytes> {
         let mut body = self.body;
-        if body.stream_hint() == StreamHint::None {
-            return Ok(Bytes::new());
-        }
-
-        let mut data = BytesMut::new();
-        while let Some(res) = body.next_data().await {
-            data.extend(res?);
-        }
-        Ok(data.freeze())
+        body.bytes().await.map_err(Into::into)
     }
 
     /// Get raw body(Payload).
@@ -82,8 +74,8 @@ impl ClientResponse {
 
     /// Try to deserialize the response body as JSON.
     // TODO(chihai): use from_reader
-    pub async fn json<T: serde::de::DeserializeOwned>(self) -> crate::Result<T> {
-        let bytes = self.bytes().await?;
+    pub async fn json<T: serde::de::DeserializeOwned>(mut self) -> crate::Result<T> {
+        let bytes = self.body.bytes().await?;
         let d = serde_json::from_slice(&bytes)?;
         Ok(d)
     }

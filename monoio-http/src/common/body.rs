@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_core::Future;
 use monoio::buf::IoBuf;
 
@@ -21,6 +21,39 @@ pub trait Body {
 
     fn next_data(&mut self) -> Self::DataFuture<'_>;
     fn stream_hint(&self) -> StreamHint;
+}
+
+pub trait BodyExt: Body {
+    type BytesFuture<'a>: Future<Output = Result<Bytes, Self::Error>>
+    where
+        Self: 'a;
+    /// Return continues memory
+    fn bytes(&mut self) -> Self::BytesFuture<'_>;
+}
+
+impl<T: Body<Data = Bytes>> BodyExt for T {
+    type BytesFuture<'a> = impl Future<Output = Result<Bytes, Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn bytes(&mut self) -> Self::BytesFuture<'_> {
+        async move {
+            match self.stream_hint() {
+                StreamHint::None => Ok(Bytes::new()),
+                StreamHint::Fixed => self
+                    .next_data()
+                    .await
+                    .expect("unable to read chunk for fixed body"),
+                StreamHint::Stream => {
+                    let mut data = BytesMut::new();
+                    while let Some(chunk) = self.next_data().await {
+                        data.extend_from_slice(&chunk?);
+                    }
+                    Ok(data.freeze())
+                }
+            }
+        }
+    }
 }
 
 pub enum HttpBody {
