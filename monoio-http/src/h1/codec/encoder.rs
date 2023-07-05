@@ -12,6 +12,7 @@ use thiserror::Error as ThisError;
 use crate::{
     common::{
         body::{Body, StreamHint},
+        error::HttpError,
         ext::Reason,
         request::RequestHead,
         response::ResponseHead,
@@ -235,9 +236,9 @@ where
     R::Body: Body,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
-    EncodeError: From<<<R as IntoParts>::Body as Body>::Error>,
+    HttpError: From<<<R as IntoParts>::Body as Body>::Error>,
 {
-    type Error = EncodeError;
+    type Error = HttpError;
 
     type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a, R: 'a;
 

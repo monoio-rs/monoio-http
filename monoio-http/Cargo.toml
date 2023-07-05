@@ -19,6 +19,7 @@ httparse = "1"
 memchr = "2.5"
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+local-sync = "0.1"
 
 async-stream = "0.3.5"
 

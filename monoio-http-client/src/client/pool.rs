@@ -1,10 +1,9 @@
 use std::{
     cell::UnsafeCell,
     collections::{HashMap, VecDeque},
-    fmt::Debug,
+    fmt::{Debug, Display},
     future::Future,
     hash::Hash,
-    ops::{Deref, DerefMut},
     rc::{Rc, Weak},
     task::ready,
     time::{Duration, Instant},
@@ -17,25 +16,27 @@ const DEFAULT_POOL_SIZE: usize = 32;
 // https://datatracker.ietf.org/doc/html/rfc6335
 const MAX_KEEPALIVE_CONNS: usize = 16384;
 
-use monoio::io::{sink::Sink, AsyncWriteRent};
-use monoio_http::h1::{codec::ClientCodec, BorrowFramedRead, FramedRead};
+use local_sync::oneshot;
+use monoio_http::common::{body::HttpBody, request::Request};
 
-type Conns<K, IO> = Rc<UnsafeCell<SharedInner<K, IO>>>;
-type WeakConns<K, IO> = Weak<UnsafeCell<SharedInner<K, IO>>>;
+use super::connection::{MultiSender, SingleSender, Transaction};
 
-struct IdleCodec<IO: AsyncWriteRent> {
-    codec: ClientCodec<IO>,
+type Conns<K, B> = Rc<UnsafeCell<SharedInner<K, B>>>;
+type WeakConns<K, B> = Weak<UnsafeCell<SharedInner<K, B>>>;
+
+struct IdleConnection<K: Hash + Eq + Display, B> {
+    pipe: PooledConnectionPipe<K, B>,
     idle_at: Instant,
 }
 
-struct SharedInner<K, IO: AsyncWriteRent> {
-    mapping: HashMap<K, VecDeque<IdleCodec<IO>>>,
+struct SharedInner<K: Hash + Eq + Display, B> {
+    mapping: HashMap<K, VecDeque<IdleConnection<K, B>>>,
     max_idle: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
-impl<K, IO: AsyncWriteRent> SharedInner<K, IO> {
+impl<K: Hash + Eq + Display, B> SharedInner<K, B> {
     #[cfg(feature = "time")]
     fn new(max_idle: Option<usize>) -> (local_sync::oneshot::Sender<()>, Self) {
         let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
@@ -76,11 +77,11 @@ impl<K, IO: AsyncWriteRent> SharedInner<K, IO> {
 
 // TODO: Connection leak? Maybe remove expired connection periodically.
 #[derive(Debug)]
-pub struct ConnectionPool<K: Hash + Eq, IO: AsyncWriteRent> {
-    conns: Conns<K, IO>,
+pub struct ConnectionPool<K: Hash + Eq + Display, B> {
+    conns: Conns<K, B>,
 }
 
-impl<K: Hash + Eq, IO: AsyncWriteRent> Clone for ConnectionPool<K, IO> {
+impl<K: Hash + Eq + Display, B> Clone for ConnectionPool<K, B> {
     fn clone(&self) -> Self {
         Self {
             conns: self.conns.clone(),
@@ -88,20 +89,7 @@ impl<K: Hash + Eq, IO: AsyncWriteRent> Clone for ConnectionPool<K, IO> {
     }
 }
 
-pub struct PooledConnection<K, IO: AsyncWriteRent>
-where
-    K: Hash + Eq + Debug,
-{
-    // option is for take when drop
-    key: Option<K>,
-    // option is for take when drop
-    codec: Option<ClientCodec<IO>>,
-
-    pool: WeakConns<K, IO>,
-    reuseable: bool,
-}
-
-impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> ConnectionPool<K, IO> {
+impl<K: Hash + Eq + Display + 'static, B: 'static> ConnectionPool<K, B> {
     #[cfg(feature = "time")]
     fn new(idle_interval: Option<Duration>, max_idle: Option<usize>) -> Self {
         let (tx, inner) = SharedInner::new(max_idle);
@@ -124,7 +112,7 @@ impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> ConnectionPool<K, IO>
     }
 }
 
-impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> Default for ConnectionPool<K, IO> {
+impl<K: Hash + Eq + Display + 'static, B: 'static> Default for ConnectionPool<K, B> {
     #[cfg(feature = "time")]
     fn default() -> Self {
         Self::new(None, None)
@@ -136,96 +124,51 @@ impl<K: Hash + Eq + 'static, IO: AsyncWriteRent + 'static> Default for Connectio
     }
 }
 
-impl<K, IO: AsyncWriteRent> PooledConnection<K, IO>
+pub struct PooledConnection<K, B>
 where
-    K: Hash + Eq + Debug,
+    K: Hash + Eq + Display,
 {
-    pub fn set_reuseable(&mut self, reuseable: bool) {
-        self.reuseable = reuseable;
+    // option is for take when drop
+    key: Option<K>,
+    pipe: Option<PooledConnectionPipe<K, B>>,
+    pool: WeakConns<K, B>,
+    reuseable: bool,
+}
+
+impl<K, B> PooledConnection<K, B>
+where
+    K: Hash + Eq + Display,
+{
+    pub async fn send_request(
+        mut self,
+        req: Request<B>,
+    ) -> Result<http::Response<HttpBody>, crate::Error> {
+        match self.pipe.take() {
+            Some(mut pipe) => {
+                self.pipe = Some(pipe.clone());
+                match pipe.send_request(req, self).await {
+                    Ok(resp) => Ok(resp),
+                    Err(e) => {
+                        #[cfg(feature = "logging")]
+                        tracing::error!("Request failed: {:?}", e);
+                        Err(e)
+                    }
+                }
+            }
+            None => {
+                panic!()
+            }
+        }
+    }
+
+    pub fn set_reuseable(&mut self, set: bool) {
+        self.reuseable = set;
     }
 }
 
-impl<K: Hash + Eq + Debug, IO: AsyncWriteRent> BorrowFramedRead for PooledConnection<K, IO>
+impl<K, IO> Drop for PooledConnection<K, IO>
 where
-    ClientCodec<IO>: BorrowFramedRead,
-{
-    type IO = <ClientCodec<IO> as BorrowFramedRead>::IO;
-    type Codec = <ClientCodec<IO> as BorrowFramedRead>::Codec;
-
-    fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec> {
-        self.codec
-            .as_mut()
-            .expect("connection should be present")
-            .framed_mut()
-    }
-}
-
-impl<K, IO: AsyncWriteRent> Deref for PooledConnection<K, IO>
-where
-    K: Hash + Eq + Debug,
-{
-    type Target = ClientCodec<IO>;
-
-    fn deref(&self) -> &Self::Target {
-        self.codec.as_ref().expect("connection should be present")
-    }
-}
-
-impl<K, IO: AsyncWriteRent> DerefMut for PooledConnection<K, IO>
-where
-    K: Hash + Eq + Debug,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.codec.as_mut().expect("connection should be present")
-    }
-}
-
-impl<K: Hash + Eq + Debug, IO: AsyncWriteRent, R> Sink<R> for PooledConnection<K, IO>
-where
-    ClientCodec<IO>: Sink<R>,
-{
-    type Error = <ClientCodec<IO> as Sink<R>>::Error;
-
-    type SendFuture<'a> = <ClientCodec<IO> as Sink<R>>::SendFuture<'a>
-    where
-        Self: 'a, R: 'a;
-
-    type FlushFuture<'a> = <ClientCodec<IO> as Sink<R>>::FlushFuture<'a>
-    where
-        Self: 'a;
-
-    type CloseFuture<'a> = <ClientCodec<IO> as Sink<R>>::CloseFuture<'a>
-    where
-        Self: 'a;
-
-    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
-    where
-        R: 'a,
-    {
-        self.codec
-            .as_mut()
-            .expect("connection should be present")
-            .send(item)
-    }
-
-    fn flush(&mut self) -> Self::FlushFuture<'_> {
-        self.codec
-            .as_mut()
-            .expect("connection should be present")
-            .flush()
-    }
-
-    fn close(&mut self) -> Self::CloseFuture<'_> {
-        self.codec
-            .as_mut()
-            .expect("connection should be present")
-            .close()
-    }
-}
-
-impl<K, IO: AsyncWriteRent> Drop for PooledConnection<K, IO>
-where
-    K: Hash + Eq + Debug,
+    K: Hash + Eq + Display,
 {
     fn drop(&mut self) {
         if !self.reuseable {
@@ -236,16 +179,15 @@ where
 
         if let Some(pool) = self.pool.upgrade() {
             let key = self.key.take().expect("unable to take key");
-            let codec = self.codec.take().expect("unable to take connection");
-            let idle = IdleCodec {
-                codec,
+            let pipe = self.pipe.take().expect("unable to take connection");
+            let idle = IdleConnection {
+                pipe,
                 idle_at: Instant::now(),
             };
 
             let conns = unsafe { &mut *pool.get() };
             #[cfg(feature = "logging")]
-            let key_debug = format!("{key:?}");
-
+            let key_str = key.to_string();
             let queue = conns
                 .mapping
                 .entry(key)
@@ -253,13 +195,14 @@ where
 
             #[cfg(feature = "logging")]
             tracing::debug!(
-                "connection pool size: {:?} for key: {key_debug}",
+                "connection pool size: {:?} for key: {:?}",
                 queue.len(),
+                key_str
             );
 
             if queue.len() > conns.max_idle {
                 #[cfg(feature = "logging")]
-                tracing::info!("connection pool is full for key: {key_debug}");
+                tracing::info!("connection pool is full for key: {:?}", key_str);
                 let _ = queue.pop_front();
             }
 
@@ -271,38 +214,54 @@ where
     }
 }
 
-impl<K, IO: AsyncWriteRent> ConnectionPool<K, IO>
+impl<K, B> ConnectionPool<K, B>
 where
-    K: Hash + Eq + ToOwned<Owned = K> + Debug,
+    K: Hash + Eq + ToOwned<Owned = K> + Display,
 {
-    pub fn get(&self, key: &K) -> Option<PooledConnection<K, IO>> {
+    pub fn get(&self, key: &K) -> Option<PooledConnection<K, B>> {
         let conns = unsafe { &mut *self.conns.get() };
 
         match conns.mapping.get_mut(key) {
             Some(v) => {
                 #[cfg(feature = "logging")]
-                tracing::debug!("connection got from pool for key: {key:?}");
-                v.pop_front().map(|idle| PooledConnection {
+                tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
+                let mut pooled_conn = PooledConnection {
                     key: Some(key.to_owned()),
-                    codec: Some(idle.codec),
+                    pipe: None,
                     pool: Rc::downgrade(&self.conns),
                     reuseable: true,
-                })
+                };
+                let idle_conn = v.pop_front();
+                match idle_conn {
+                    Some(mut idle) => {
+                        let is_h2 = idle.pipe.is_http2();
+                        if is_h2 {
+                            pooled_conn.pipe = Some(idle.pipe.clone());
+                            pooled_conn.reuseable = false;
+                            idle.idle_at = Instant::now();
+                            v.push_back(idle);
+                        } else {
+                            pooled_conn.pipe = Some(idle.pipe);
+                        }
+                        Some(pooled_conn)
+                    }
+                    None => None,
+                }
             }
             None => {
                 #[cfg(feature = "logging")]
-                tracing::debug!("no connection in pool for key: {key:?}");
+                tracing::debug!("no connection in pool for key: {:?} ", key.to_string());
                 None
             }
         }
     }
 
-    pub fn link(&self, key: K, io: ClientCodec<IO>) -> PooledConnection<K, IO> {
+    pub fn link(&self, key: K, pipe: PooledConnectionPipe<K, B>) -> PooledConnection<K, B> {
         #[cfg(feature = "logging")]
         tracing::debug!("linked new connection to the pool");
         PooledConnection {
             key: Some(key),
-            codec: Some(io),
+            pipe: Some(pipe),
             pool: Rc::downgrade(&self.conns),
             reuseable: true,
         }
@@ -310,14 +269,14 @@ where
 }
 
 // TODO: make interval not eq to idle_dur
-struct IdleTask<K, IO: AsyncWriteRent> {
+struct IdleTask<K: Hash + Eq + Display, B> {
     tx: local_sync::oneshot::Sender<()>,
-    conns: WeakConns<K, IO>,
+    conns: WeakConns<K, B>,
     interval: monoio::time::Interval,
     idle_dur: Duration,
 }
 
-impl<K, IO: AsyncWriteRent> Future for IdleTask<K, IO> {
+impl<K: Hash + Eq + Display, B> Future for IdleTask<K, B> {
     type Output = ();
 
     fn poll(
@@ -346,6 +305,55 @@ impl<K, IO: AsyncWriteRent> Future for IdleTask<K, IO> {
             #[cfg(feature = "logging")]
             tracing::debug!("pool upgrade failed, idle task exit");
             return std::task::Poll::Ready(());
+        }
+    }
+}
+pub enum PooledConnectionPipe<K, B>
+where
+    K: Hash + Eq + Display,
+{
+    Http1(SingleSender<K, B>),
+    Http2(MultiSender<K, B>),
+}
+
+impl<K: Hash + Eq + Display, B> PooledConnectionPipe<K, B> {
+    pub async fn send_request(
+        &mut self,
+        req: Request<B>,
+        conn: PooledConnection<K, B>,
+    ) -> Result<http::Response<HttpBody>, crate::Error> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+
+        let res = match self {
+            Self::Http1(ref s) => s.send(Transaction { req, resp_tx, conn }),
+            Self::Http2(ref s) => s.send(Transaction { req, resp_tx, conn }),
+        };
+
+        match res {
+            Ok(_) => {}
+            Err(e) => {
+                #[cfg(feature = "logging")]
+                tracing::error!("Request send to conn manager failed {:?}", e);
+                return Err(crate::error::Error::ConnManagerReqSendError);
+            }
+        }
+
+        resp_rx.await?
+    }
+
+    pub fn is_http2(&self) -> bool {
+        match self {
+            Self::Http1(_) => false,
+            Self::Http2(_) => true,
+        }
+    }
+}
+
+impl<K: Hash + Eq + Display, B> Clone for PooledConnectionPipe<K, B> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Http1(tx) => Self::Http1(tx.temp_sender_clone()),
+            Self::Http2(tx) => Self::Http2(tx.clone()),
         }
     }
 }

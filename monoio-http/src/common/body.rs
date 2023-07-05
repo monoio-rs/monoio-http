@@ -1,10 +1,9 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
+use bytes::Bytes;
 use futures_core::Future;
-use monoio::{buf::IoBuf, macros::support::poll_fn};
+use monoio::buf::IoBuf;
+
+use super::error::HttpError;
+use crate::{h1::payload::FramedPayloadRecvr, h2::RecvStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamHint {
@@ -24,30 +23,64 @@ pub trait Body {
     fn stream_hint(&self) -> StreamHint;
 }
 
-pub trait OwnedBody {
-    type Data: IoBuf;
-    type Error;
-
-    fn poll_next_data(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>>;
-    fn stream_hint(&self) -> StreamHint;
+pub enum HttpBody {
+    Ready(Option<Bytes>),
+    H1(FramedPayloadRecvr),
+    H2(RecvStream),
 }
 
-impl<T: OwnedBody + Unpin> Body for T {
-    type Data = <T as OwnedBody>::Data;
-    type Error = <T as OwnedBody>::Error;
-    type DataFuture<'a> = impl Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
-    where
+impl From<FramedPayloadRecvr> for HttpBody {
+    fn from(p: FramedPayloadRecvr) -> Self {
+        Self::H1(p)
+    }
+}
+
+impl From<RecvStream> for HttpBody {
+    fn from(p: RecvStream) -> Self {
+        Self::H2(p)
+    }
+}
+
+impl Default for HttpBody {
+    fn default() -> Self {
+        Self::Ready(None)
+    }
+}
+
+impl Body for HttpBody {
+    type Data = Bytes;
+    type Error = HttpError;
+    type DataFuture<'a> = impl Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a where
         Self: 'a;
 
     fn next_data(&mut self) -> Self::DataFuture<'_> {
-        let mut pinned = Pin::new(self);
-        poll_fn(move |cx| pinned.as_mut().poll_next_data(cx))
+        async move {
+            match self {
+                Self::Ready(b) => b.take().map(Result::Ok),
+                Self::H1(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+                Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+            }
+        }
     }
 
     fn stream_hint(&self) -> StreamHint {
-        <T as OwnedBody>::stream_hint(self)
+        match self {
+            Self::Ready(Some(_)) => StreamHint::Fixed,
+            Self::Ready(None) => StreamHint::None,
+            Self::H1(ref p) => p.stream_hint(),
+            Self::H2(ref p) => p.stream_hint(),
+        }
+    }
+}
+
+pub trait FixedBody {
+    type BodyType: Body;
+    fn fixed_body(data: Option<Bytes>) -> Self::BodyType;
+}
+
+impl FixedBody for HttpBody {
+    type BodyType = Self;
+    fn fixed_body(data: Option<Bytes>) -> Self::BodyType {
+        Self::Ready(data)
     }
 }

@@ -1,6 +1,9 @@
 use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
-use monoio_http::h1::payload::{fixed_payload_pair, Payload};
+use monoio_http::common::{
+    body::{Body, FixedBody, HttpBody},
+    error::HttpError,
+};
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
 use crate::client::connector::DefaultTlsConnector;
@@ -10,13 +13,13 @@ use crate::{
 };
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
-pub struct ClientRequest<C = DefaultTcpConnector<Key>, CS = DefaultTlsConnector<Key>> {
-    client: Client<C, CS>,
+pub struct ClientRequest<B, C = DefaultTcpConnector<Key, B>, CS = DefaultTlsConnector<Key, B>> {
+    client: Client<B, C, CS>,
     builder: Builder,
 }
 
 #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-pub struct ClientRequest<C = DefaultTcpConnector<Key>> {
+pub struct ClientRequest<B, C = DefaultTcpConnector<Key>> {
     client: Client<C>,
     builder: Builder,
 }
@@ -24,19 +27,19 @@ pub struct ClientRequest<C = DefaultTcpConnector<Key>> {
 macro_rules! client_request_impl {
     ( $( $x:item )* ) => {
         #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<C> ClientRequest<C> {
+        impl<B, C> ClientRequest<B, C> {
             $($x)*
         }
 
         #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<C, CS> ClientRequest<C, CS> {
+        impl<B, C, CS> ClientRequest<B, C, CS> {
             $($x)*
         }
     };
 }
 
 client_request_impl! {
-    pub fn new(client: Client<C, CS>) -> Self {
+    pub fn new(client: Client<B, C, CS> ) -> Self {
         Self {
             client,
             builder: Builder::new(),
@@ -72,7 +75,7 @@ client_request_impl! {
         self
     }
 
-    fn build_request(builder: Builder, body: Payload) -> crate::Result<http::Request<Payload>> {
+    fn build_request(builder: Builder, body: B) -> crate::Result<http::Request<B>> {
         let mut req = builder.version(http::Version::HTTP_11).body(body)?;
         if let Some(host) = req.uri().host() {
             let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
@@ -85,18 +88,20 @@ client_request_impl! {
     }
 }
 
-impl ClientRequest {
+impl<B> ClientRequest<B>
+where
+    B: Body<Data = Bytes, Error = HttpError> + FixedBody<BodyType = B> + 'static,
+    HttpBody: From<B>,
+{
     pub async fn send(self) -> crate::Result<ClientResponse> {
-        let request = Self::build_request(self.builder, Payload::None)?;
-        let resp = self.client.send(request).await?;
+        let request = Self::build_request(self.builder, B::fixed_body(None))?;
+        let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
     pub async fn send_body(self, data: Bytes) -> crate::Result<ClientResponse> {
-        let (payload, payload_sender) = fixed_payload_pair();
-        payload_sender.feed(Ok(data));
-        let request = Self::build_request(self.builder, Payload::Fixed(payload))?;
-        let resp = self.client.send(request).await?;
+        let request = Self::build_request(self.builder, B::fixed_body(Some(data)))?;
+        let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
@@ -106,10 +111,8 @@ impl ClientRequest {
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        let (payload, payload_sender) = fixed_payload_pair();
-        payload_sender.feed(Ok(body));
-        let request = Self::build_request(builder, Payload::Fixed(payload))?;
-        let resp = self.client.send(request).await?;
+        let request = Self::build_request(builder, B::fixed_body(Some(body)))?;
+        let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 }
