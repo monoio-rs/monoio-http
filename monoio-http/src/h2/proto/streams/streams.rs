@@ -1359,13 +1359,14 @@ impl Clone for OpaqueStreamRef {
 
 impl Drop for OpaqueStreamRef {
     fn drop(&mut self) {
-        drop_stream_ref(self.inner.clone(), self.key);
+        let inner = unsafe { &mut *self.inner.get() };
+        drop_stream_ref(inner, self.key);
     }
 }
 
 // TODO: Move back in fn above
-fn drop_stream_ref(inner: Rc<UnsafeCell<Inner>>, key: store::Key) {
-    let me = unsafe { &mut *inner.get() };
+fn drop_stream_ref(inner: &mut Inner, key: store::Key) {
+    let me = inner;
 
     me.refs -= 1;
     let mut stream = me.store.resolve(key);
