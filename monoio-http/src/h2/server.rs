@@ -1236,7 +1236,7 @@ where
         if !self.read_fut.armed() {
             let io = self.inner_mut();
 
-            #[allow(cast_ref_to_mut)]
+            #[allow(clippy::cast_ref_to_mut)]
             let io = unsafe { &mut *(io as *const T as *mut T) };
             self.read_fut.arm_future(io.read_exact(owned_buf));
         }

@@ -1,9 +1,6 @@
 use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
-use monoio_http::common::{
-    body::{Body, FixedBody, HttpBody},
-    error::HttpError,
-};
+use monoio_http::common::body::{FixedBody, HttpBody};
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
 use crate::client::connector::DefaultTlsConnector;
@@ -13,8 +10,8 @@ use crate::{
 };
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
-pub struct ClientRequest<B, C = DefaultTcpConnector<Key, B>, CS = DefaultTlsConnector<Key, B>> {
-    client: Client<B, C, CS>,
+pub struct ClientRequest<C = DefaultTcpConnector<Key>, CS = DefaultTlsConnector<Key>> {
+    client: Client<C, CS>,
     builder: Builder,
 }
 
@@ -27,19 +24,19 @@ pub struct ClientRequest<B, C = DefaultTcpConnector<Key>> {
 macro_rules! client_request_impl {
     ( $( $x:item )* ) => {
         #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<B, C> ClientRequest<B, C> {
+        impl<C> ClientRequest<C> {
             $($x)*
         }
 
         #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<B, C, CS> ClientRequest<B, C, CS> {
+        impl<C, CS> ClientRequest<C, CS> {
             $($x)*
         }
     };
 }
 
 client_request_impl! {
-    pub fn new(client: Client<B, C, CS> ) -> Self {
+    pub fn new(client: Client<C, CS> ) -> Self {
         Self {
             client,
             builder: Builder::new(),
@@ -75,7 +72,7 @@ client_request_impl! {
         self
     }
 
-    fn build_request(builder: Builder, body: B) -> crate::Result<http::Request<B>> {
+    fn build_request(builder: Builder, body: HttpBody) -> crate::Result<http::Request<HttpBody>> {
         let mut req = builder.version(http::Version::HTTP_11).body(body)?;
         if let Some(host) = req.uri().host() {
             let host = HeaderValue::try_from(host).map_err(http::Error::from)?;
@@ -88,19 +85,15 @@ client_request_impl! {
     }
 }
 
-impl<B> ClientRequest<B>
-where
-    B: Body<Data = Bytes, Error = HttpError> + FixedBody<BodyType = B> + 'static,
-    HttpBody: From<B>,
-{
+impl ClientRequest {
     pub async fn send(self) -> crate::Result<ClientResponse> {
-        let request = Self::build_request(self.builder, B::fixed_body(None))?;
+        let request = Self::build_request(self.builder, HttpBody::fixed_body(None))?;
         let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
 
     pub async fn send_body(self, data: Bytes) -> crate::Result<ClientResponse> {
-        let request = Self::build_request(self.builder, B::fixed_body(Some(data)))?;
+        let request = Self::build_request(self.builder, HttpBody::fixed_body(Some(data)))?;
         let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }
@@ -111,7 +104,7 @@ where
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        let request = Self::build_request(builder, B::fixed_body(Some(body)))?;
+        let request = Self::build_request(builder, HttpBody::fixed_body(Some(body)))?;
         let resp = self.client.send_request(request).await?;
         Ok(ClientResponse::new(resp))
     }

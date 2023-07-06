@@ -28,6 +28,8 @@ pub enum Error {
     ClosePooledConnection,
     #[error("Http crate error {0}")]
     HttpError(#[from] monoio_http::common::error::HttpError),
+    #[error("Codec missing from PooledConnection")]
+    MissingCodec,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

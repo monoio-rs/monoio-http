@@ -3,13 +3,14 @@ pub mod connector;
 pub mod key;
 pub mod pool;
 
-use std::{marker::PhantomData, rc::Rc};
+use std::rc::Rc;
 
 use bytes::Bytes;
 use http::{uri::Scheme, HeaderMap};
 use monoio_http::common::{
     body::{Body, HttpBody},
     error::HttpError,
+    request::Request,
     response::Response,
 };
 
@@ -27,15 +28,13 @@ pub struct ClientInner<C, #[cfg(any(feature = "rustls", feature = "native-tls"))
 }
 
 pub struct Client<
-    B,
-    C = DefaultTcpConnector<Key, B>,
-    #[cfg(any(feature = "rustls", feature = "native-tls"))] CS = DefaultTlsConnector<Key, B>,
+    C = DefaultTcpConnector<Key>,
+    #[cfg(any(feature = "rustls", feature = "native-tls"))] CS = DefaultTlsConnector<Key>,
 > {
     #[cfg(any(feature = "rustls", feature = "native-tls"))]
     shared: Rc<ClientInner<C, CS>>,
     #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
     shared: Rc<ClientInner<C>>,
-    _phantom: PhantomData<B>,
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -125,25 +124,16 @@ impl Builder {
         self
     }
 
-    pub fn build_http1<B>(self) -> Client<B>
-    where
-        B: Body<Data = Bytes, Error = HttpError> + 'static,
-    {
+    pub fn build_http1(self) -> Client {
         Client::new(self.global_config, self.connection_config)
     }
 
-    pub fn build_http2<B>(mut self) -> Client<B>
-    where
-        B: Body<Data = Bytes, Error = HttpError> + 'static,
-    {
+    pub fn build_http2(mut self) -> Client {
         self.http2_client();
         Client::new(self.global_config, self.connection_config)
     }
 
-    pub fn build_auto<B>(mut self) -> Client<B>
-    where
-        B: Body<Data = Bytes, Error = HttpError> + 'static,
-    {
+    pub fn build_auto(mut self) -> Client {
         self.http_auto();
         Client::new(self.global_config, self.connection_config)
     }
@@ -152,13 +142,13 @@ impl Builder {
 macro_rules! client_clone_impl {
     ( $( $x:item )* ) => {
         #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<B, C> Clone for Client<B, C>
+        impl<C> Clone for Client<C>
         {
             $($x)*
         }
 
         #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<B, C, CS> Clone for Client<B, C, CS>
+        impl<C, CS> Clone for Client<C, CS>
         {
             $($x)*
         }
@@ -169,7 +159,6 @@ client_clone_impl! {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            _phantom: self._phantom
         }
     }
 }
@@ -179,16 +168,13 @@ pub struct ClientConfig {
     default_headers: Rc<HeaderMap>,
 }
 
-impl Default for Client<HttpBody> {
+impl Default for Client {
     fn default() -> Self {
         Builder::default().build_http1()
     }
 }
 
-impl<B> Client<B>
-where
-    B: Body<Data = Bytes, Error = HttpError> + 'static,
-{
+impl Client {
     fn new(g_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         let shared = Rc::new(ClientInner {
             cfg: ClientConfig::default(),
@@ -196,13 +182,13 @@ where
             #[cfg(any(feature = "rustls", feature = "native-tls"))]
             https_connector: DefaultTlsConnector::new(g_config, c_config),
         });
-        Self {
-            shared,
-            _phantom: PhantomData,
-        }
+        Self { shared }
     }
 
-    pub async fn send_request(&self, req: http::Request<B>) -> crate::Result<Response<HttpBody>> {
+    pub async fn send_request<B: Body<Data = Bytes, Error = HttpError> + 'static>(
+        &self,
+        req: Request<B>,
+    ) -> crate::Result<Response<HttpBody>> {
         let mut key: Key = req.uri().try_into()?;
         key.set_version(req.version());
 
@@ -224,7 +210,7 @@ where
 
 macro_rules! http_method {
     ($fn: ident, $method: expr) => {
-        pub fn $fn<U>(&self, uri: U) -> ClientRequest<B, C, CS>
+        pub fn $fn<U>(&self, uri: U) -> ClientRequest<C, CS>
         where
             http::Uri: TryFrom<U>,
             <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
@@ -237,12 +223,12 @@ macro_rules! http_method {
 macro_rules! client_impl {
     ( $( $x:item )* ) => {
         #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<B: Body<Data = Bytes, Error = HttpError>, C> Client<B, C> {
+        impl<C> Client<B, C> {
             $($x)*
         }
 
         #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<B: Body<Data = Bytes, Error = HttpError>, C, CS> Client<B, C, CS> {
+        impl<C, CS> Client<C, CS> {
             $($x)*
         }
     };
@@ -275,18 +261,15 @@ impl<B: Body<Data = Bytes, Error = HttpError>, C> Client<B, C> {
 }
 
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
-impl<B, C, CS> Client<B, C, CS>
-where
-    B: Body<Data = Bytes, Error = HttpError>,
-{
-    pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<B, C, CS>
+impl<C, CS> Client<C, CS> {
+    pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<C, CS>
     where
         http::Method: TryFrom<M>,
         <http::Method as TryFrom<M>>::Error: Into<http::Error>,
         http::Uri: TryFrom<U>,
         <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
     {
-        let mut req = ClientRequest::<B, C, CS>::new(self.clone())
+        let mut req = ClientRequest::<C, CS>::new(self.clone())
             .method(method)
             .uri(uri);
         for (key, value) in self.shared.cfg.default_headers.iter() {

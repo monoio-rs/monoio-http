@@ -16,27 +16,49 @@ const DEFAULT_POOL_SIZE: usize = 32;
 // https://datatracker.ietf.org/doc/html/rfc6335
 const MAX_KEEPALIVE_CONNS: usize = 16384;
 
-use local_sync::oneshot;
-use monoio_http::common::{body::HttpBody, request::Request};
+use bytes::Bytes;
+use monoio::io::{AsyncReadRent, AsyncWriteRent, Split};
+use monoio_http::common::{
+    body::{Body, HttpBody},
+    error::HttpError,
+    request::Request, response::Response,
+};
 
-use super::connection::{MultiSender, SingleSender, Transaction};
+use super::connection::HttpConnection;
 
-type Conns<K, B> = Rc<UnsafeCell<SharedInner<K, B>>>;
-type WeakConns<K, B> = Weak<UnsafeCell<SharedInner<K, B>>>;
 
-struct IdleConnection<K: Hash + Eq + Display, B> {
-    pipe: PooledConnectionPipe<K, B>,
+const CONN_CLOSE: &[u8] = b"close";
+
+type Conns<K, IO> = Rc<UnsafeCell<SharedInner<K, IO>>>;
+type WeakConns<K, IO> = Weak<UnsafeCell<SharedInner<K, IO>>>;
+
+struct IdleConnection<IO: AsyncWriteRent + AsyncReadRent + Split> {
+    conn: HttpConnection<IO>,
     idle_at: Instant,
 }
 
-struct SharedInner<K: Hash + Eq + Display, B> {
-    mapping: HashMap<K, VecDeque<IdleConnection<K, B>>>,
+impl<IO: AsyncWriteRent + AsyncReadRent + Split> IdleConnection<IO> {
+    fn reserve(mut self) -> (HttpConnection<IO>, Option<Self>) {
+        let is_h2 = self.conn.is_http2();
+
+        if is_h2 {
+            let conn = self.conn.http2_conn_clone();
+            self.idle_at = Instant::now();
+            (conn, Some(self))
+        } else {
+            (self.conn, None)
+        }
+    }
+}
+
+struct SharedInner<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
+    mapping: HashMap<K, VecDeque<IdleConnection<IO>>>,
     max_idle: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
-impl<K: Hash + Eq + Display, B> SharedInner<K, B> {
+impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> SharedInner<K, IO> {
     #[cfg(feature = "time")]
     fn new(max_idle: Option<usize>) -> (local_sync::oneshot::Sender<()>, Self) {
         let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
@@ -77,11 +99,13 @@ impl<K: Hash + Eq + Display, B> SharedInner<K, B> {
 
 // TODO: Connection leak? Maybe remove expired connection periodically.
 #[derive(Debug)]
-pub struct ConnectionPool<K: Hash + Eq + Display, B> {
-    conns: Conns<K, B>,
+pub struct ConnectionPool<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
+    conns: Conns<K, IO>,
 }
 
-impl<K: Hash + Eq + Display, B> Clone for ConnectionPool<K, B> {
+impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> Clone
+    for ConnectionPool<K, IO>
+{
     fn clone(&self) -> Self {
         Self {
             conns: self.conns.clone(),
@@ -89,7 +113,9 @@ impl<K: Hash + Eq + Display, B> Clone for ConnectionPool<K, B> {
     }
 }
 
-impl<K: Hash + Eq + Display + 'static, B: 'static> ConnectionPool<K, B> {
+impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Split + 'static>
+    ConnectionPool<K, IO>
+{
     #[cfg(feature = "time")]
     fn new(idle_interval: Option<Duration>, max_idle: Option<usize>) -> Self {
         let (tx, inner) = SharedInner::new(max_idle);
@@ -112,7 +138,9 @@ impl<K: Hash + Eq + Display + 'static, B: 'static> ConnectionPool<K, B> {
     }
 }
 
-impl<K: Hash + Eq + Display + 'static, B: 'static> Default for ConnectionPool<K, B> {
+impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Split + 'static> Default
+    for ConnectionPool<K, IO>
+{
     #[cfg(feature = "time")]
     fn default() -> Self {
         Self::new(None, None)
@@ -124,54 +152,61 @@ impl<K: Hash + Eq + Display + 'static, B: 'static> Default for ConnectionPool<K,
     }
 }
 
-pub struct PooledConnection<K, B>
+pub struct PooledConnection<K, IO>
 where
     K: Hash + Eq + Display,
+    IO: AsyncWriteRent + AsyncReadRent + Split,
 {
     // option is for take when drop
     key: Option<K>,
-    pipe: Option<PooledConnectionPipe<K, B>>,
-    pool: WeakConns<K, B>,
-    reuseable: bool,
+    conn: Option<HttpConnection<IO>>,
+    pool: WeakConns<K, IO>,
+    reusable: bool,
+    remove_h2: bool, // Remove H2 Connection
 }
 
-impl<K, B> PooledConnection<K, B>
+
+impl<K, IO> PooledConnection<K, IO>
 where
     K: Hash + Eq + Display,
+    IO: AsyncWriteRent + AsyncReadRent + Split,
 {
-    pub async fn send_request(
+    pub async fn send_request<B: Body<Data = Bytes, Error = HttpError> + 'static>(
         mut self,
         req: Request<B>,
-    ) -> Result<http::Response<HttpBody>, crate::Error> {
-        match self.pipe.take() {
-            Some(mut pipe) => {
-                self.pipe = Some(pipe.clone());
-                match pipe.send_request(req, self).await {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => {
-                        #[cfg(feature = "logging")]
-                        tracing::error!("Request failed: {:?}", e);
-                        Err(e)
-                    }
+    ) -> Result<Response<HttpBody>, crate::Error> {
+        match self.conn.as_mut() {
+            Some(conn) => {
+                let (result, remove) = conn.send_request(req).await;
+                self.remove_h2 = remove;
+
+                match result {
+                    Ok(resp) => {
+                        let header_value = resp.headers().get(http::header::CONNECTION);
+                        if let Some(v) = header_value {
+                            self.set_reusable(!v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE))
+                        }
+                        Ok(resp)
+                    },
+                    Err(e) => Err(e)
                 }
             }
-            None => {
-                panic!()
-            }
+            None => Err(crate::Error::MissingCodec),
         }
     }
 
-    pub fn set_reuseable(&mut self, set: bool) {
-        self.reuseable = set;
+    pub fn set_reusable(&mut self, set: bool) {
+        self.reusable = set;
     }
 }
 
 impl<K, IO> Drop for PooledConnection<K, IO>
 where
     K: Hash + Eq + Display,
+    IO: AsyncWriteRent + AsyncReadRent + Split,
 {
     fn drop(&mut self) {
-        if !self.reuseable {
+        if !self.reusable && !self.remove_h2 {
             #[cfg(feature = "logging")]
             tracing::debug!("connection dropped");
             return;
@@ -179,46 +214,57 @@ where
 
         if let Some(pool) = self.pool.upgrade() {
             let key = self.key.take().expect("unable to take key");
-            let pipe = self.pipe.take().expect("unable to take connection");
+            let conn = self.conn.take().expect("unable to take connection");
             let idle = IdleConnection {
-                pipe,
+                conn,
                 idle_at: Instant::now(),
             };
 
             let conns = unsafe { &mut *pool.get() };
             #[cfg(feature = "logging")]
             let key_str = key.to_string();
-            let queue = conns
-                .mapping
-                .entry(key)
-                .or_insert(VecDeque::with_capacity(conns.max_idle));
 
-            #[cfg(feature = "logging")]
-            tracing::debug!(
-                "connection pool size: {:?} for key: {:?}",
-                queue.len(),
-                key_str
-            );
+            if self.remove_h2 {
+                // There should be only one H2 connection per host
+                let _queue = conns.mapping.remove(&key);
 
-            if queue.len() > conns.max_idle {
                 #[cfg(feature = "logging")]
-                tracing::info!("connection pool is full for key: {:?}", key_str);
-                let _ = queue.pop_front();
+                tracing::debug!("Removed H2 connection for key: {:?}", key_str);
             }
 
-            queue.push_back(idle);
+            if self.reusable {
+                let queue = conns
+                    .mapping
+                    .entry(key)
+                    .or_insert(VecDeque::with_capacity(conns.max_idle));
 
-            #[cfg(feature = "logging")]
-            tracing::debug!("connection recycled");
+                #[cfg(feature = "logging")]
+                tracing::debug!(
+                    "connection pool size: {:?} for key: {:?}",
+                    queue.len(),
+                    key_str
+                );
+
+                if queue.len() > conns.max_idle {
+                    #[cfg(feature = "logging")]
+                    tracing::info!("connection pool is full for key: {:?}", key_str);
+                    let _ = queue.pop_front();
+                }
+
+                queue.push_back(idle);
+                #[cfg(feature = "logging")]
+                tracing::debug!("connection recycled");
+            }
         }
     }
 }
 
-impl<K, B> ConnectionPool<K, B>
+impl<K, IO> ConnectionPool<K, IO>
 where
     K: Hash + Eq + ToOwned<Owned = K> + Display,
+    IO: AsyncWriteRent + AsyncReadRent + Split,
 {
-    pub fn get(&self, key: &K) -> Option<PooledConnection<K, B>> {
+    pub fn get(&self, key: &K) -> Option<PooledConnection<K, IO>> {
         let conns = unsafe { &mut *self.conns.get() };
 
         match conns.mapping.get_mut(key) {
@@ -227,22 +273,25 @@ where
                 tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
                 let mut pooled_conn = PooledConnection {
                     key: Some(key.to_owned()),
-                    pipe: None,
+                    conn: None,
                     pool: Rc::downgrade(&self.conns),
-                    reuseable: true,
+                    reusable: true,
+                    remove_h2: false,
                 };
                 let idle_conn = v.pop_front();
+
                 match idle_conn {
-                    Some(mut idle) => {
-                        let is_h2 = idle.pipe.is_http2();
-                        if is_h2 {
-                            pooled_conn.pipe = Some(idle.pipe.clone());
-                            pooled_conn.reuseable = false;
-                            idle.idle_at = Instant::now();
+                    Some(idle) => {
+                        let (checkout_conn, readd_conn) = idle.reserve();
+
+                        // Add back the H2Connection so other request's can clone it
+                        if let Some(idle) = readd_conn {
                             v.push_back(idle);
-                        } else {
-                            pooled_conn.pipe = Some(idle.pipe);
+                            // No need to add back the H2Connection to the Pool
+                            pooled_conn.reusable = false;
                         }
+
+                        pooled_conn.conn = Some(checkout_conn);
                         Some(pooled_conn)
                     }
                     None => None,
@@ -256,27 +305,31 @@ where
         }
     }
 
-    pub fn link(&self, key: K, pipe: PooledConnectionPipe<K, B>) -> PooledConnection<K, B> {
+    pub fn link(&self, key: K, conn: HttpConnection<IO>) -> PooledConnection<K, IO> {
         #[cfg(feature = "logging")]
         tracing::debug!("linked new connection to the pool");
+
         PooledConnection {
             key: Some(key),
-            pipe: Some(pipe),
+            conn: Some(conn),
             pool: Rc::downgrade(&self.conns),
-            reuseable: true,
+            reusable: true,
+            remove_h2: false,
         }
     }
 }
 
 // TODO: make interval not eq to idle_dur
-struct IdleTask<K: Hash + Eq + Display, B> {
+struct IdleTask<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
     tx: local_sync::oneshot::Sender<()>,
-    conns: WeakConns<K, B>,
+    conns: WeakConns<K, IO>,
     interval: monoio::time::Interval,
     idle_dur: Duration,
 }
 
-impl<K: Hash + Eq + Display, B> Future for IdleTask<K, B> {
+impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> Future
+    for IdleTask<K, IO>
+{
     type Output = ();
 
     fn poll(
@@ -305,55 +358,6 @@ impl<K: Hash + Eq + Display, B> Future for IdleTask<K, B> {
             #[cfg(feature = "logging")]
             tracing::debug!("pool upgrade failed, idle task exit");
             return std::task::Poll::Ready(());
-        }
-    }
-}
-pub enum PooledConnectionPipe<K, B>
-where
-    K: Hash + Eq + Display,
-{
-    Http1(SingleSender<K, B>),
-    Http2(MultiSender<K, B>),
-}
-
-impl<K: Hash + Eq + Display, B> PooledConnectionPipe<K, B> {
-    pub async fn send_request(
-        &mut self,
-        req: Request<B>,
-        conn: PooledConnection<K, B>,
-    ) -> Result<http::Response<HttpBody>, crate::Error> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-
-        let res = match self {
-            Self::Http1(ref s) => s.send(Transaction { req, resp_tx, conn }),
-            Self::Http2(ref s) => s.send(Transaction { req, resp_tx, conn }),
-        };
-
-        match res {
-            Ok(_) => {}
-            Err(_e) => {
-                #[cfg(feature = "logging")]
-                tracing::error!("Request send to conn manager failed {_e:?}");
-                return Err(crate::error::Error::ConnManagerReqSendError);
-            }
-        }
-
-        resp_rx.await?
-    }
-
-    pub fn is_http2(&self) -> bool {
-        match self {
-            Self::Http1(_) => false,
-            Self::Http2(_) => true,
-        }
-    }
-}
-
-impl<K: Hash + Eq + Display, B> Clone for PooledConnectionPipe<K, B> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Http1(tx) => Self::Http1(tx.temp_sender_clone()),
-            Self::Http2(tx) => Self::Http2(tx.clone()),
         }
     }
 }

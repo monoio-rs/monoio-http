@@ -14,14 +14,13 @@ use monoio::{
     net::TcpStream,
 };
 use monoio_http::{
-    common::{body::Body, error::HttpError},
     h1::codec::ClientCodec,
 };
 
 use super::{
-    connection::{request_channel, Http1ConnManager, Http2ConnManager},
+    connection::{HttpConnection},
     key::HttpVersion,
-    pool::{ConnectionPool, PooledConnection, PooledConnectionPipe},
+    pool::{ConnectionPool, PooledConnection},
     ClientGlobalConfig, ConnectionConfig, Proto,
 };
 #[cfg(feature = "rustls")]
@@ -30,9 +29,9 @@ pub type TlsStream = monoio_rustls::ClientTlsStream<TcpStream>;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 pub type TlsStream = monoio_native_tls::TlsStream<TcpStream>;
 
-pub type DefaultTcpConnector<T, B> = PooledConnector<TcpConnector, T, TcpStream, B>;
+pub type DefaultTcpConnector<T> = PooledConnector<TcpConnector, T, TcpStream>;
 #[cfg(any(feature = "rustls", feature = "native-tls"))]
-pub type DefaultTlsConnector<T, B> = PooledConnector<TlsConnector, T, TlsStream, B>;
+pub type DefaultTlsConnector<T> = PooledConnector<TlsConnector, T, TlsStream>;
 
 pub trait Connector<K> {
     type Connection;
@@ -151,18 +150,14 @@ impl HttpConnector {
         Self { conn_config }
     }
 
-    pub async fn connect<IO, K, B>(
+    pub async fn connect<IO>(
         &self,
         io: IO,
         version: Version,
-    ) -> crate::Result<PooledConnectionPipe<K, B>>
+    ) -> crate::Result<HttpConnection<IO>>
     where
         IO: AsyncReadRent + AsyncWriteRent + Split + Unpin + 'static,
-        K: Hash + Eq + Display + 'static,
-        B: Body<Data = bytes::Bytes, Error = HttpError> + 'static,
     {
-        let (sender, recvr) = request_channel::<K, B>();
-
         let proto = if self.conn_config.proto == Proto::Auto {
             version // Use version from the header
         } else {
@@ -175,31 +170,16 @@ impl HttpConnector {
 
         match proto {
             Version::HTTP_11 => {
-                let handle = ClientCodec::new(io);
-                let mut conn = Http1ConnManager {
-                    req_rx: recvr,
-                    handle: Some(handle),
-                };
-                monoio::spawn(async move {
-                    conn.drive().await;
-                });
-                Ok(PooledConnectionPipe::Http1(sender))
+                Ok(HttpConnection::H1(Some(ClientCodec::new(io))))
             }
             Version::HTTP_2 => {
-                let (handle, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
+                let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {
                     if let Err(e) = h2_conn.await {
                         println!("H2 CONN ERR={:?}", e);
                     }
                 });
-                let mut conn = Http2ConnManager {
-                    req_rx: recvr,
-                    handle,
-                };
-                monoio::spawn(async move {
-                    conn.drive().await;
-                });
-                Ok(PooledConnectionPipe::Http2(sender.into_multi_sender()))
+               Ok(HttpConnection::H2(send_request))
             }
             _ => {
                 unreachable!()
@@ -211,18 +191,19 @@ impl HttpConnector {
 /// PooledConnector does 2 things:
 /// 1. pool
 /// 2. combine connection with codec(of cause with buffer)
-pub struct PooledConnector<TC, K, IO, B>
+pub struct PooledConnector<TC, K, IO>
 where
     K: Hash + Eq + Display,
+    IO: AsyncWriteRent+ AsyncReadRent + Split
 {
     global_config: ClientGlobalConfig,
     transport_connector: TC,
     http_connector: HttpConnector,
-    pool: ConnectionPool<K, B>,
+    pool: ConnectionPool<K, IO>,
     _phantom: PhantomData<IO>,
 }
 
-impl<C, K, IO, B> Clone for PooledConnector<C, K, IO, B>
+impl<C, K, IO> Clone for PooledConnector<C, K, IO>
 where
     K: Hash + Eq + Display,
     IO: AsyncReadRent + AsyncWriteRent + Split,
@@ -239,12 +220,11 @@ where
     }
 }
 
-impl<TC, K, IO, B> PooledConnector<TC, K, IO, B>
+impl<TC, K, IO> PooledConnector<TC, K, IO>
 where
     TC: Default,
     K: Hash + Eq + Display + 'static,
-    IO: AsyncReadRent + AsyncWriteRent + Split,
-    B: Body<Data = Bytes> + 'static,
+    IO: AsyncReadRent + AsyncWriteRent + Split +'static,
 {
     pub fn new(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         Self {
@@ -257,15 +237,14 @@ where
     }
 }
 
-impl<TC, K, IO, B> Connector<K> for PooledConnector<TC, K, IO, B>
+impl<TC, K, IO> Connector<K> for PooledConnector<TC, K, IO>
 where
     K: ToSocketAddrs + Hash + Eq + ToOwned<Owned = K> + Display + HttpVersion + 'static,
     TC: Connector<K, Connection = IO>,
     IO: AsyncReadRent + AsyncWriteRent + Split + Unpin + 'static,
-    B: Body<Data = Bytes, Error = HttpError> + 'static,
     crate::Error: From<<TC as Connector<K>>::Error>,
 {
-    type Connection = PooledConnection<K, B>;
+    type Connection = PooledConnection<K, IO>;
     type Error = crate::Error;
     type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a;
 
