@@ -107,7 +107,7 @@ struct Actions {
 /// Contains the buffer of frames to be written to the wire.
 #[derive(Debug)]
 struct SendBuffer<B> {
-    inner: Buffer<Frame<B>>,
+    inner: UnsafeCell<Buffer<Frame<B>>>,
 }
 
 // ===== impl Streams =====
@@ -188,7 +188,7 @@ where
     pub fn apply_remote_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
 
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.counts.apply_remote_settings(frame);
 
@@ -229,7 +229,7 @@ where
         // See: hyperium/h2#11
         let me = unsafe { &mut *self.inner.get() };
 
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.actions.ensure_no_conn_error()?;
         me.actions.send.ensure_next_stream_id()?;
@@ -456,7 +456,7 @@ impl Inner {
         }
 
         let actions = &mut self.actions;
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         self.counts.transition(stream, |counts, stream| {
             tracing::trace!(
@@ -545,7 +545,7 @@ impl Inner {
         };
 
         let actions = &mut self.actions;
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         self.counts.transition(stream, |counts, stream| {
             let sz = frame.payload().len();
@@ -598,7 +598,7 @@ impl Inner {
             }
         };
 
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         let actions = &mut self.actions;
 
@@ -616,8 +616,7 @@ impl Inner {
         frame: frame::WindowUpdate,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
-
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         if id.is_zero() {
             self.actions
@@ -651,7 +650,7 @@ impl Inner {
     fn handle_error<B>(&mut self, send_buffer: &mut SendBuffer<B>, err: proto::Error) -> StreamId {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         let last_processed_id = actions.recv.last_processed_id();
 
@@ -674,7 +673,7 @@ impl Inner {
     ) -> Result<(), Error> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         let last_stream_id = frame.last_stream_id();
 
@@ -768,7 +767,7 @@ impl Inner {
                 match stream_valid {
                     Ok(()) => Ok(Some(stream.key())),
                     _ => {
-                        let send_buffer = &mut send_buffer.inner;
+                        let send_buffer = send_buffer.inner.get_mut();
                         actions
                             .reset_on_recv_stream_err(send_buffer, stream, counts, stream_valid)
                             .map(|()| None)
@@ -796,7 +795,7 @@ impl Inner {
     ) -> Result<(), ()> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         if actions.conn_error.is_none() {
             actions.conn_error = Some(
@@ -834,7 +833,7 @@ impl Inner {
         T: AsyncWriteRent + Unpin + 'static,
         B: Buf,
     {
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
 
         // Send WINDOW_UPDATE frames first
         //
@@ -891,7 +890,7 @@ impl Inner {
         };
 
         let stream = self.store.resolve(key);
-        let send_buffer = &mut send_buffer.inner;
+        let send_buffer = send_buffer.inner.get_mut();
         self.actions.send_reset(
             stream,
             reason,
@@ -1028,7 +1027,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.counts.transition(stream, |counts, stream| {
             // Create the data frame
@@ -1047,7 +1046,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.counts.transition(stream, |counts, stream| {
             // Create the trailers frame
@@ -1064,7 +1063,7 @@ impl<B> StreamRef<B> {
         let me = unsafe { &mut *self.opaque.inner.get() };
 
         let stream = me.store.resolve(self.opaque.key);
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.actions
             .send_reset(stream, reason, Initiator::User, &mut me.counts, send_buffer);
@@ -1081,7 +1080,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         me.counts.transition(stream, |counts, stream| {
             let frame = server::Peer::convert_send_message(stream.id, response, end_of_stream);
@@ -1100,7 +1099,7 @@ impl<B> StreamRef<B> {
         request.extensions_mut().clear();
         let me = unsafe { &mut *self.opaque.inner.get() };
 
-        let send_buffer = &mut unsafe { &mut *self.send_buffer.get() }.inner;
+        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
 
         let actions = &mut me.actions;
         let promised_id = actions.send.reserve_local()?;
@@ -1435,7 +1434,9 @@ fn maybe_cancel(stream: &mut store::Ptr, actions: &mut Actions, counts: &mut Cou
 impl<B> SendBuffer<B> {
     fn new() -> Self {
         let inner = Buffer::new();
-        SendBuffer { inner }
+        SendBuffer {
+            inner: UnsafeCell::new(inner),
+        }
     }
 }
 
