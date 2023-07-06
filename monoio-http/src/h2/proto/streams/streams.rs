@@ -390,7 +390,7 @@ impl Inner {
     fn recv_headers<B>(
         &mut self,
         peer: peer::Dyn,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: frame::Headers,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -456,7 +456,7 @@ impl Inner {
         }
 
         let actions = &mut self.actions;
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         self.counts.transition(stream, |counts, stream| {
             tracing::trace!(
@@ -507,7 +507,7 @@ impl Inner {
     fn recv_data<B>(
         &mut self,
         peer: peer::Dyn,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: frame::Data,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -545,7 +545,7 @@ impl Inner {
         };
 
         let actions = &mut self.actions;
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         self.counts.transition(stream, |counts, stream| {
             let sz = frame.payload().len();
@@ -565,7 +565,7 @@ impl Inner {
 
     fn recv_reset<B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: frame::Reset,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -598,7 +598,7 @@ impl Inner {
             }
         };
 
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         let actions = &mut self.actions;
 
@@ -612,11 +612,11 @@ impl Inner {
 
     fn recv_window_update<B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: frame::WindowUpdate,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         if id.is_zero() {
             self.actions
@@ -647,10 +647,10 @@ impl Inner {
         Ok(())
     }
 
-    fn handle_error<B>(&mut self, send_buffer: &mut SendBuffer<B>, err: proto::Error) -> StreamId {
+    fn handle_error<B>(&mut self, send_buffer: &SendBuffer<B>, err: proto::Error) -> StreamId {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         let last_processed_id = actions.recv.last_processed_id();
 
@@ -668,12 +668,12 @@ impl Inner {
 
     fn recv_go_away<B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: &frame::GoAway,
     ) -> Result<(), Error> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         let last_stream_id = frame.last_stream_id();
 
@@ -697,7 +697,7 @@ impl Inner {
 
     fn recv_push_promise<B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         frame: frame::PushPromise,
     ) -> Result<(), Error> {
         let id = frame.stream_id();
@@ -761,19 +761,20 @@ impl Inner {
 
             let actions = &mut self.actions;
 
-            self.counts.transition(stream, |counts, stream| {
-                let stream_valid = actions.recv.recv_push_promise(frame, stream);
+            self.counts
+                .transition(stream, |counts: &mut Counts, stream| {
+                    let stream_valid = actions.recv.recv_push_promise(frame, stream);
 
-                match stream_valid {
-                    Ok(()) => Ok(Some(stream.key())),
-                    _ => {
-                        let send_buffer = send_buffer.inner.get_mut();
-                        actions
-                            .reset_on_recv_stream_err(send_buffer, stream, counts, stream_valid)
-                            .map(|()| None)
+                    match stream_valid {
+                        Ok(()) => Ok(Some(stream.key())),
+                        _ => {
+                            let send_buffer = unsafe { &mut *send_buffer.inner.get() };
+                            actions
+                                .reset_on_recv_stream_err(send_buffer, stream, counts, stream_valid)
+                                .map(|()| None)
+                        }
                     }
-                }
-            })?
+                })?
         };
         // If we're successful, push the headers and stream...
         if let Some(child) = child_key {
@@ -790,12 +791,12 @@ impl Inner {
 
     fn recv_eof<B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         clear_pending_accept: bool,
     ) -> Result<(), ()> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         if actions.conn_error.is_none() {
             actions.conn_error = Some(
@@ -825,7 +826,7 @@ impl Inner {
 
     fn poll_complete<T, B>(
         &mut self,
-        send_buffer: &mut SendBuffer<B>,
+        send_buffer: &SendBuffer<B>,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
     ) -> Poll<io::Result<()>>
@@ -833,7 +834,7 @@ impl Inner {
         T: AsyncWriteRent + Unpin + 'static,
         B: Buf,
     {
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
 
         // Send WINDOW_UPDATE frames first
         //
@@ -859,7 +860,7 @@ impl Inner {
         Poll::Ready(Ok(()))
     }
 
-    fn send_reset<B>(&mut self, send_buffer: &mut SendBuffer<B>, id: StreamId, reason: Reason) {
+    fn send_reset<B>(&mut self, send_buffer: &SendBuffer<B>, id: StreamId, reason: Reason) {
         let key = match self.store.find_entry(id) {
             Entry::Occupied(e) => e.key(),
             Entry::Vacant(e) => {
@@ -890,7 +891,7 @@ impl Inner {
         };
 
         let stream = self.store.resolve(key);
-        let send_buffer = send_buffer.inner.get_mut();
+        let send_buffer = unsafe { &mut *send_buffer.inner.get() };
         self.actions.send_reset(
             stream,
             reason,
