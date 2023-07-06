@@ -41,7 +41,7 @@ where
     /// However, it should be possible to avoid this duplication with a little
     /// bit of unsafe code. This optimization has been postponed until it has
     /// been shown to be necessary.
-    send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+    send_buffer: Rc<SendBuffer<B>>,
 
     _p: ::std::marker::PhantomData<P>,
 }
@@ -50,9 +50,9 @@ where
 // Ensures that the methods only get one instantiation, instead of two (client and server)
 #[derive(Debug)]
 pub(crate) struct DynStreams<'a, B> {
-    inner: &'a Rc<UnsafeCell<Inner>>,
+    inner: &'a UnsafeCell<Inner>,
 
-    send_buffer: &'a Rc<UnsafeCell<SendBuffer<B>>>,
+    send_buffer: &'a SendBuffer<B>,
 
     peer: peer::Dyn,
 }
@@ -61,7 +61,7 @@ pub(crate) struct DynStreams<'a, B> {
 #[derive(Debug)]
 pub(crate) struct StreamRef<B> {
     opaque: OpaqueStreamRef,
-    send_buffer: Rc<UnsafeCell<SendBuffer<B>>>,
+    send_buffer: Rc<SendBuffer<B>>,
 }
 
 /// Reference to the stream state that hides the send data chunk generic
@@ -122,7 +122,7 @@ where
 
         Streams {
             inner: Inner::new(peer, config),
-            send_buffer: Rc::new(UnsafeCell::new(SendBuffer::new())),
+            send_buffer: Rc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
         }
     }
@@ -181,14 +181,13 @@ where
         T: AsyncWriteRent + Unpin + 'static,
     {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.poll_complete(send_buffer, cx, dst)
+        me.poll_complete(&self.send_buffer, cx, dst)
     }
 
     pub fn apply_remote_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
 
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.counts.apply_remote_settings(frame);
 
@@ -229,7 +228,7 @@ where
         // See: hyperium/h2#11
         let me = unsafe { &mut *self.inner.get() };
 
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.actions.ensure_no_conn_error()?;
         me.actions.send.ensure_next_stream_id()?;
@@ -308,33 +307,28 @@ where
 impl<B> DynStreams<'_, B> {
     pub fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_headers(self.peer, send_buffer, frame)
+        me.recv_headers(self.peer, self.send_buffer, frame)
     }
 
     pub fn recv_data(&mut self, frame: frame::Data) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_data(self.peer, send_buffer, frame)
+        me.recv_data(self.peer, self.send_buffer, frame)
     }
 
     pub fn recv_reset(&mut self, frame: frame::Reset) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_reset(send_buffer, frame)
+        me.recv_reset(self.send_buffer, frame)
     }
 
     /// Notify all streams that a connection-level error happened.
     pub fn handle_error(&mut self, err: proto::Error) -> StreamId {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.handle_error(send_buffer, err)
+        me.handle_error(self.send_buffer, err)
     }
 
     pub fn recv_go_away(&mut self, frame: &frame::GoAway) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_go_away(send_buffer, frame)
+        me.recv_go_away(self.send_buffer, frame)
     }
 
     pub fn last_processed_id(&self) -> StreamId {
@@ -344,26 +338,22 @@ impl<B> DynStreams<'_, B> {
 
     pub fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_window_update(send_buffer, frame)
+        me.recv_window_update(self.send_buffer, frame)
     }
 
     pub fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_push_promise(send_buffer, frame)
+        me.recv_push_promise(self.send_buffer, frame)
     }
 
     pub fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.recv_eof(send_buffer, clear_pending_accept)
+        me.recv_eof(self.send_buffer, clear_pending_accept)
     }
 
     pub fn send_reset(&mut self, id: StreamId, reason: Reason) {
         let me = unsafe { &mut *self.inner.get() };
-        let send_buffer = unsafe { &mut *self.send_buffer.get() };
-        me.send_reset(send_buffer, id, reason)
+        me.send_reset(self.send_buffer, id, reason)
     }
 
     pub fn send_go_away(&mut self, last_processed_id: StreamId) {
@@ -1028,7 +1018,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.counts.transition(stream, |counts, stream| {
             // Create the data frame
@@ -1047,7 +1037,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.counts.transition(stream, |counts, stream| {
             // Create the trailers frame
@@ -1064,7 +1054,7 @@ impl<B> StreamRef<B> {
         let me = unsafe { &mut *self.opaque.inner.get() };
 
         let stream = me.store.resolve(self.opaque.key);
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.actions
             .send_reset(stream, reason, Initiator::User, &mut me.counts, send_buffer);
@@ -1081,7 +1071,7 @@ impl<B> StreamRef<B> {
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         me.counts.transition(stream, |counts, stream| {
             let frame = server::Peer::convert_send_message(stream.id, response, end_of_stream);
@@ -1100,7 +1090,7 @@ impl<B> StreamRef<B> {
         request.extensions_mut().clear();
         let me = unsafe { &mut *self.opaque.inner.get() };
 
-        let send_buffer = unsafe { &mut *self.send_buffer.get() }.inner.get_mut();
+        let send_buffer = unsafe { &mut *self.send_buffer.inner.get() };
 
         let actions = &mut me.actions;
         let promised_id = actions.send.reserve_local()?;
