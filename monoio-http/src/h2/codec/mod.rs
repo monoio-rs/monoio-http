@@ -167,7 +167,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.stream_fut.armed() {
             let stream = unsafe {
-                #[allow(cast_ref_to_mut)]
+                #[allow(clippy::cast_ref_to_mut)]
                 &mut *(&self.inner as *const FramedRead<FramedWrite<T, B>>
                     as *mut FramedRead<FramedWrite<T, B>>)
             };
