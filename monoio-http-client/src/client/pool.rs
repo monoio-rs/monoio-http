@@ -61,10 +61,7 @@ impl<K: Hash + Eq + Display, B> SharedInner<K, B> {
         let max_idle = max_idle
             .map(|n| n.min(MAX_KEEPALIVE_CONNS))
             .unwrap_or(DEFAULT_KEEPALIVE_CONNS);
-        Self {
-            mapping,
-            keepalive_conns,
-        }
+        Self { mapping, max_idle }
     }
 
     fn clear_expired(&mut self, dur: Duration) {

@@ -1,10 +1,10 @@
 use bytes::Bytes;
-
 pub mod body;
 pub mod error;
 pub mod ext;
 pub mod request;
 pub mod response;
+pub(crate) mod waker;
 
 pub trait FromParts<P, B = Bytes> {
     fn from_parts(parts: P, body: B) -> Self;
