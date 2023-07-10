@@ -12,6 +12,7 @@ use thiserror::Error as ThisError;
 use crate::{
     common::{
         body::StreamHint,
+        error::HttpError,
         ext::Reason,
         request::{Request, RequestHead},
         response::{Response, ResponseHead},
@@ -400,7 +401,7 @@ where
     F: ItemWrapper<D::Item, R>,
 {
     type Item = F::Output;
-    type Error = DecodeError;
+    type Error = HttpError;
 
     #[inline]
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -417,20 +418,20 @@ where
                     // Check not identity
                     if !x.as_bytes().eq_ignore_ascii_case(b"identity") {
                         // The transfer-encoding is illegal!
-                        return Err(DecodeError::Header);
+                        return Err(DecodeError::Header.into());
                     }
                 }
 
                 // Now transfer-encoding is identity.
                 if let Some(content_length) = head.header_map().get(http::header::CONTENT_LENGTH) {
                     let content_length = match content_length.to_str() {
-                        Ok(c) if c.starts_with('+') => return Err(DecodeError::Header),
+                        Ok(c) if c.starts_with('+') => return Err(DecodeError::Header.into()),
                         Ok(c) => c,
-                        Err(_) => return Err(DecodeError::Header),
+                        Err(_) => return Err(DecodeError::Header.into()),
                     };
                     let content_length = match content_length.parse::<usize>() {
                         Ok(c) => c,
-                        Err(_) => return Err(DecodeError::Header),
+                        Err(_) => return Err(DecodeError::Header.into()),
                     };
                     if content_length == 0 {
                         return Ok(Some(F::wrap_none(head)));
@@ -441,7 +442,7 @@ where
                 Ok(Some(F::wrap_none(head)))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -477,10 +478,10 @@ where
     IO: AsyncReadRent,
     HD: Decoder<
         Item = (I, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>),
-        Error = DecodeError,
+        Error = HttpError,
     >,
 {
-    type Error = DecodeError;
+    type Error = HttpError;
 
     type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a
     where
@@ -505,15 +506,15 @@ where
                         match self.framed.next_with(&mut decoder).await {
                             // EOF
                             None => {
-                                sender.feed(Err(PayloadError::UnexpectedEof));
-                                return Err(DecodeError::UnexpectedEof);
+                                sender.feed(Err((PayloadError::UnexpectedEof).into()));
+                                return Err(DecodeError::UnexpectedEof.into());
                             }
                             Some(Ok(item)) => {
                                 sender.feed(Ok(item));
                             }
                             Some(Err(e)) => {
-                                sender.feed(Err(PayloadError::Decode));
-                                return Err(e);
+                                sender.feed(Err(PayloadError::Decode.into()));
+                                return Err(e.into());
                             }
                         }
                     }
@@ -521,8 +522,8 @@ where
                         match self.framed.next_with(decoder).await {
                             // EOF
                             None => {
-                                sender.feed_error(PayloadError::UnexpectedEof);
-                                return Err(DecodeError::UnexpectedEof);
+                                sender.feed_error(PayloadError::UnexpectedEof.into());
+                                return Err(DecodeError::UnexpectedEof.into());
                             }
                             Some(Ok(item)) => {
                                 // Send data
@@ -538,8 +539,8 @@ where
                             }
                             Some(Err(e)) => {
                                 // Send error
-                                sender.feed_error(PayloadError::Decode);
-                                return Err(e);
+                                sender.feed_error(PayloadError::Decode.into());
+                                return Err(e.into());
                             }
                         }
                     }
@@ -554,10 +555,10 @@ where
     IO: AsyncReadRent,
     HD: Decoder<
         Item = (I, NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>),
-        Error = DecodeError,
+        Error = HttpError,
     >,
 {
-    type Item = Result<I, DecodeError>;
+    type Item = Result<I, HttpError>;
     type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
 
     fn next(&mut self) -> Self::NextFuture<'_> {
@@ -609,11 +610,11 @@ where
             ResponseHead,
             PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
         ),
-        Error = DecodeError,
+        Error = HttpError,
     >,
 {
     type Item =
-        Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, DecodeError>;
+        Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, HttpError>;
     type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
 
     fn next(&mut self) -> Self::NextFuture<'_> {

@@ -19,7 +19,10 @@ use super::{
     codec::decoder::{ChunkedBodyDecoder, DecodeError, FixedBodyDecoder, PayloadDecoder},
     BorrowFramedRead,
 };
-use crate::common::body::{Body, StreamHint};
+use crate::common::{
+    body::{Body, StreamHint},
+    error::HttpError,
+};
 
 #[derive(ThisError, Debug)]
 pub enum PayloadError {
@@ -31,7 +34,7 @@ pub enum PayloadError {
     Io(#[from] io::Error),
 }
 
-pub enum Payload<D = Bytes, E = PayloadError>
+pub enum Payload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
 {
@@ -115,7 +118,7 @@ pub fn stream_payload_pair<D: IoBuf, E>() -> (StreamPayload<D, E>, StreamPayload
 
 /// Fixed Payload
 #[derive(Debug)]
-pub struct FixedPayload<D = Bytes, E = PayloadError>
+pub struct FixedPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
 {
@@ -123,7 +126,7 @@ where
 }
 
 /// Sender part of the fixed payload
-pub struct FixedPayloadSender<D = Bytes, E = PayloadError> {
+pub struct FixedPayloadSender<D = Bytes, E = HttpError> {
     inner: Weak<UnsafeCell<FixedInner<D, E>>>,
 }
 
@@ -211,7 +214,7 @@ impl<D, E> FixedPayloadSender<D, E> {
 
 /// Stream Payload
 #[derive(Debug)]
-pub struct StreamPayload<D = Bytes, E = PayloadError>
+pub struct StreamPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
 {
@@ -219,7 +222,7 @@ where
 }
 
 /// Sender part of the stream payload
-pub struct StreamPayloadSender<D = Bytes, E = PayloadError> {
+pub struct StreamPayloadSender<D = Bytes, E = HttpError> {
     inner: Weak<UnsafeCell<StreamInner<D, E>>>,
 }
 
@@ -304,13 +307,13 @@ impl<D, E> StreamPayloadSender<D, E> {
 }
 
 pub struct FramedPayloadRecvr {
-    pub data_rx: local_sync::mpsc::unbounded::Rx<Option<Result<Bytes, DecodeError>>>,
+    pub data_rx: local_sync::mpsc::unbounded::Rx<Option<Result<Bytes, HttpError>>>,
     pub hint: StreamHint,
 }
 
 impl Body for FramedPayloadRecvr {
     type Data = Bytes;
-    type Error = DecodeError;
+    type Error = HttpError;
     type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
     where
         Self: 'a;
@@ -357,7 +360,7 @@ where
     T::IO: AsyncReadRent,
 {
     type Data = Bytes;
-    type Error = DecodeError;
+    type Error = HttpError;
     type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
     where
         Self: 'a;
@@ -373,20 +376,20 @@ where
                 PayloadDecoder::Fixed(decoder) => {
                     self.eof = true;
                     match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof)),
+                        None => Some(Err(DecodeError::UnexpectedEof.into())),
                         Some(Ok(item)) => Some(Ok(item)),
-                        Some(Err(e)) => Some(Err(e)),
+                        Some(Err(e)) => Some(Err(e.into())),
                     }
                 }
                 PayloadDecoder::Streamed(decoder) => {
                     match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof)),
+                        None => Some(Err(DecodeError::UnexpectedEof.into())),
                         Some(Ok(Some(item))) => Some(Ok(item)),
                         Some(Ok(None)) => {
                             self.eof = true;
                             None
                         }
-                        Some(Err(e)) => Some(Err(e)),
+                        Some(Err(e)) => Some(Err(e.into())),
                     }
                 }
             }

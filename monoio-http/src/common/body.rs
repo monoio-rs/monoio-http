@@ -1,10 +1,15 @@
 use bytes::{Bytes, BytesMut};
 use futures_core::Future;
+use http::Response;
 use monoio::buf::IoBuf;
 use smallvec::SmallVec;
 
 use super::error::HttpError;
-use crate::{h1::payload::FramedPayloadRecvr, h2::RecvStream};
+use crate::{
+    common::request::Request,
+    h1::payload::{FramedPayloadRecvr, Payload},
+    h2::RecvStream,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamHint {
@@ -93,13 +98,20 @@ impl<T: Body<Data = Bytes>> BodyExt for T {
 
 pub enum HttpBody {
     Ready(Option<Bytes>),
-    H1(FramedPayloadRecvr),
+    H1Server(Payload),
+    H1Client(FramedPayloadRecvr),
     H2(RecvStream),
+}
+
+impl From<Payload> for HttpBody {
+    fn from(p: Payload) -> Self {
+        Self::H1Server(p)
+    }
 }
 
 impl From<FramedPayloadRecvr> for HttpBody {
     fn from(p: FramedPayloadRecvr) -> Self {
-        Self::H1(p)
+        Self::H1Client(p)
     }
 }
 
@@ -115,6 +127,28 @@ impl Default for HttpBody {
     }
 }
 
+impl HttpBody {
+    pub fn request<T>(req: Request<T>) -> Request<Self>
+    where
+        Self: From<T>,
+    {
+        let (parts, body) = req.into_parts();
+        #[cfg(feature = "logging")]
+        tracing::debug!("Request {parts:?}");
+        Request::from_parts(parts, body.into())
+    }
+
+    pub fn response<T>(req: Response<T>) -> Response<Self>
+    where
+        Self: From<T>,
+    {
+        let (parts, body) = req.into_parts();
+        #[cfg(feature = "logging")]
+        tracing::debug!("Response {parts:?}");
+        Response::from_parts(parts, body.into())
+    }
+}
+
 impl Body for HttpBody {
     type Data = Bytes;
     type Error = HttpError;
@@ -125,7 +159,8 @@ impl Body for HttpBody {
         async move {
             match self {
                 Self::Ready(b) => b.take().map(Result::Ok),
-                Self::H1(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+                Self::H1Client(ref mut p) => p.next_data().await,
+                Self::H1Server(ref mut p) => p.next_data().await,
                 Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
             }
         }
@@ -135,7 +170,8 @@ impl Body for HttpBody {
         match self {
             Self::Ready(Some(_)) => StreamHint::Fixed,
             Self::Ready(None) => StreamHint::None,
-            Self::H1(ref p) => p.stream_hint(),
+            Self::H1Client(ref p) => p.stream_hint(),
+            Self::H1Server(ref p) => p.stream_hint(),
             Self::H2(ref p) => p.stream_hint(),
         }
     }
