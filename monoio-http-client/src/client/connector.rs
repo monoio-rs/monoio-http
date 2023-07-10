@@ -7,18 +7,15 @@ use std::{
     net::ToSocketAddrs,
 };
 
-use bytes::Bytes;
 use http::Version;
 use monoio::{
     io::{AsyncReadRent, AsyncWriteRent, Split},
     net::TcpStream,
 };
-use monoio_http::{
-    h1::codec::ClientCodec,
-};
+use monoio_http::h1::codec::ClientCodec;
 
 use super::{
-    connection::{HttpConnection},
+    connection::HttpConnection,
     key::HttpVersion,
     pool::{ConnectionPool, PooledConnection},
     ClientGlobalConfig, ConnectionConfig, Proto,
@@ -150,11 +147,7 @@ impl HttpConnector {
         Self { conn_config }
     }
 
-    pub async fn connect<IO>(
-        &self,
-        io: IO,
-        version: Version,
-    ) -> crate::Result<HttpConnection<IO>>
+    pub async fn connect<IO>(&self, io: IO, version: Version) -> crate::Result<HttpConnection<IO>>
     where
         IO: AsyncReadRent + AsyncWriteRent + Split + Unpin + 'static,
     {
@@ -169,9 +162,7 @@ impl HttpConnector {
         };
 
         match proto {
-            Version::HTTP_11 => {
-                Ok(HttpConnection::H1(Some(ClientCodec::new(io))))
-            }
+            Version::HTTP_11 => Ok(HttpConnection::H1(Some(ClientCodec::new(io)))),
             Version::HTTP_2 => {
                 let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {
@@ -179,7 +170,7 @@ impl HttpConnector {
                         println!("H2 CONN ERR={:?}", e);
                     }
                 });
-               Ok(HttpConnection::H2(send_request))
+                Ok(HttpConnection::H2(send_request))
             }
             _ => {
                 unreachable!()
@@ -194,7 +185,7 @@ impl HttpConnector {
 pub struct PooledConnector<TC, K, IO>
 where
     K: Hash + Eq + Display,
-    IO: AsyncWriteRent+ AsyncReadRent + Split
+    IO: AsyncWriteRent + AsyncReadRent + Split,
 {
     global_config: ClientGlobalConfig,
     transport_connector: TC,
@@ -224,7 +215,7 @@ impl<TC, K, IO> PooledConnector<TC, K, IO>
 where
     TC: Default,
     K: Hash + Eq + Display + 'static,
-    IO: AsyncReadRent + AsyncWriteRent + Split +'static,
+    IO: AsyncReadRent + AsyncWriteRent + Split + 'static,
 {
     pub fn new(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         Self {

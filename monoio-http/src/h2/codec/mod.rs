@@ -3,6 +3,7 @@ mod framed_read;
 mod framed_write;
 
 use std::{
+    cell::UnsafeCell,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -24,7 +25,7 @@ use crate::h2::{
 pub struct Codec<T, B> {
     stream_fut: MaybeArmedBoxFuture<Option<Result<Frame, Error>>>,
     // Put it at the last to make sure futures depending on it drop first.
-    inner: FramedRead<FramedWrite<T, B>>,
+    inner: UnsafeCell<FramedRead<FramedWrite<T, B>>>,
 }
 
 impl<T, B> Codec<T, B>
@@ -60,7 +61,10 @@ where
         let default_fut = async { Some(Err(Error::Io(io::ErrorKind::AddrInUse, None))) };
         let stream_fut = MaybeArmedBoxFuture::new(default_fut);
 
-        Codec { inner, stream_fut }
+        Codec {
+            inner: UnsafeCell::new(inner),
+            stream_fut,
+        }
     }
 }
 
@@ -73,7 +77,7 @@ impl<T, B> Codec<T, B> {
     /// before calling this function, then the frame will be allowed.
     #[inline]
     pub fn set_max_recv_frame_size(&mut self, val: usize) {
-        self.inner.set_max_frame_size(val)
+        unsafe { (*self.inner.get()).set_max_frame_size(val) }
     }
 
     /// Returns the current max received frame size setting.
@@ -87,8 +91,8 @@ impl<T, B> Codec<T, B> {
     }
 
     /// Returns the max frame size that can be sent to the peer.
-    pub fn max_send_frame_size(&self) -> usize {
-        self.inner.get_ref().max_frame_size()
+    pub fn max_send_frame_size(&mut self) -> usize {
+        self.inner.get_mut().get_mut().max_frame_size()
     }
 
     /// Set the peer's max frame size.
@@ -103,7 +107,7 @@ impl<T, B> Codec<T, B> {
 
     /// Set the max header list size that can be received.
     pub fn set_max_recv_header_list_size(&mut self, val: usize) {
-        self.inner.set_max_header_list_size(val);
+        self.inner.get_mut().set_max_header_list_size(val)
     }
 
     /// Get a reference to the inner stream.
@@ -114,7 +118,7 @@ impl<T, B> Codec<T, B> {
 
     /// Get a mutable reference to the inner stream.
     pub fn get_mut(&mut self) -> &mut T {
-        self.inner.get_mut().get_mut()
+        self.inner.get_mut().get_mut().get_mut()
     }
 
     /// Takes the data payload value that was fully written to the socket
@@ -123,7 +127,7 @@ impl<T, B> Codec<T, B> {
     }
 
     fn framed_write(&mut self) -> &mut FramedWrite<T, B> {
-        self.inner.get_mut()
+        self.inner.get_mut().get_mut()
     }
 }
 
@@ -166,11 +170,8 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.stream_fut.armed() {
-            let stream = unsafe {
-                #[allow(clippy::cast_ref_to_mut)]
-                &mut *(&self.inner as *const FramedRead<FramedWrite<T, B>>
-                    as *mut FramedRead<FramedWrite<T, B>>)
-            };
+            let stream = unsafe { &mut *(self.inner.get()) };
+
             self.stream_fut.arm_future(stream.next());
         }
 
