@@ -111,6 +111,7 @@
 //! [`TcpListener`]: https://docs.rs/monoio/latest/monoio/net/tcp/struct.TcpListener.html
 
 use std::{
+    cell::UnsafeCell,
     fmt,
     future::Future,
     io,
@@ -320,7 +321,7 @@ struct Flush<T, B> {
 struct ReadPreface<T, B> {
     read_fut: MaybeArmedBoxFuture<BufResult<usize, BytesMut>>, //    pos: usize,
     // Put it at the last to make sure futures depending on it drop first.
-    codec: Option<Codec<T, B>>,
+    codec: Option<UnsafeCell<Codec<T, B>>>,
 }
 
 #[derive(Debug)]
@@ -1211,20 +1212,16 @@ where
 impl<T, B: Buf> ReadPreface<T, B> {
     fn new(codec: Codec<T, B>) -> Self {
         ReadPreface {
-            codec: Some(codec),
+            codec: Some(UnsafeCell::new(codec)),
             read_fut: Default::default(),
         }
-    }
-
-    fn inner_mut(&mut self) -> &mut T {
-        self.codec.as_mut().unwrap().get_mut()
     }
 }
 
 impl<T, B> Future for ReadPreface<T, B>
 where
     T: AsyncReadRent + Unpin + 'static,
-    B: Buf,
+    B: Buf + 'static,
 {
     type Output = Result<Codec<T, B>, crate::h2::Error>;
 
@@ -1234,10 +1231,8 @@ where
         let owned_buf = BytesMut::from(&buf[..]);
 
         if !self.read_fut.armed() {
-            let io = self.inner_mut();
-
-            #[allow(clippy::cast_ref_to_mut)]
-            let io = unsafe { &mut *(io as *const T as *mut T) };
+            let io = unsafe { &mut *(self.codec.as_mut().unwrap().get()) };
+            let io = io.get_mut();
             self.read_fut.arm_future(io.read_exact(owned_buf));
         }
 
@@ -1261,7 +1256,9 @@ where
             }
         }
 
-        Poll::Ready(Ok(self.codec.take().unwrap()))
+        let codec = self.codec.take().unwrap();
+
+        Poll::Ready(Ok(codec.into_inner()))
     }
 }
 

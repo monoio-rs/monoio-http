@@ -21,11 +21,11 @@ use monoio::io::{AsyncReadRent, AsyncWriteRent, Split};
 use monoio_http::common::{
     body::{Body, HttpBody},
     error::HttpError,
-    request::Request, response::Response,
+    request::Request,
+    response::Response,
 };
 
 use super::connection::HttpConnection;
-
 
 const CONN_CLOSE: &[u8] = b"close";
 
@@ -162,7 +162,6 @@ where
     remove_h2: bool, // Remove H2 Connection
 }
 
-
 impl<K, IO> PooledConnection<K, IO>
 where
     K: Hash + Eq + Display,
@@ -184,8 +183,8 @@ where
                             self.set_reusable(!v.as_bytes().eq_ignore_ascii_case(CONN_CLOSE))
                         }
                         Ok(resp)
-                    },
-                    Err(e) => Err(e)
+                    }
+                    Err(e) => Err(e),
                 }
             }
             None => Err(crate::Error::MissingCodec),

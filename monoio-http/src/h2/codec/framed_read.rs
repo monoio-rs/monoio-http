@@ -57,10 +57,6 @@ impl<T> FramedRead<T> {
         }
     }
 
-    pub fn get_ref(&self) -> &T {
-        self.inner.get_ref()
-    }
-
     pub fn get_mut(&mut self) -> &mut T {
         self.inner.get_mut()
     }
@@ -365,11 +361,6 @@ where
                     }
                     Err(e) => return Some(Err(e)),
                 }
-
-                // if let Some(frame) = decode_frame(hpack, max_header_list_size, partial, bytes)? {
-                //     tracing::debug!(?frame, "received");
-                //     return Some(Ok(frame));
-                // }
             }
         }
     }

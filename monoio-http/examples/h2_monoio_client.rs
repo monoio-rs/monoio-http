@@ -4,7 +4,7 @@ use monoio_http::h2::client;
 
 #[monoio::main]
 async fn main() {
-    let tcp = TcpStream::connect("127.0.0.1:59288").await.unwrap();
+    let tcp = TcpStream::connect("127.0.0.1:7081").await.unwrap();
     let (mut client, h2) = client::handshake(tcp).await.unwrap();
 
     // Spawn a task to run the conn...

@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     io::{self, Cursor},
     task::{Context, Poll},
 };
@@ -33,7 +34,7 @@ pub struct FramedWrite<T, B> {
     shut_fut: MaybeArmedBoxFuture<io::Result<()>>,
     /// Upstream `AsyncWriteRent`
     // Put it at the last to make sure futures depending on it drop first.
-    inner: T,
+    inner: UnsafeCell<T>,
 }
 
 #[derive(Debug)]
@@ -84,7 +85,7 @@ where
 {
     pub fn new(inner: T) -> FramedWrite<T, B> {
         FramedWrite {
-            inner,
+            inner: UnsafeCell::new(inner),
             encoder: Encoder {
                 hpack: hpack::Encoder::default(),
                 buf: Cursor::new(BytesMut::with_capacity(DEFAULT_BUFFER_CAPACITY)),
@@ -159,8 +160,7 @@ where
                             total_bytes
                         );
 
-                        #[allow(clippy::cast_ref_to_mut)]
-                        let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
+                        let io = unsafe { &mut *(self.inner.get()) };
                         let write_fut = async move {
                             let res1 = io.write_all(encoder_buf_bytes).await;
                             let res2 = io.write_all(frame_payload_bytes).await;
@@ -190,8 +190,7 @@ where
                             encoder_buf_bytes.remaining()
                         );
 
-                        #[allow(clippy::cast_ref_to_mut)]
-                        let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
+                        let io = unsafe { &mut *(self.inner.get()) };
                         self.write_fut.arm_future(io.write_all(encoder_buf_bytes));
 
                         let (result, _) = ready!(self.write_fut.poll(cx));
@@ -208,8 +207,7 @@ where
 
         tracing::trace!("flushing buffer io");
         if !self.flush_fut.armed() {
-            #[allow(clippy::cast_ref_to_mut)]
-            let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
+            let io = unsafe { &mut *(self.inner.get()) };
             tracing::trace!("Framed write Flush returning");
             self.flush_fut.arm_future(io.flush());
         }
@@ -224,8 +222,7 @@ where
         ready!(self.flush(cx))?;
 
         if !self.shut_fut.armed() {
-            #[allow(clippy::cast_ref_to_mut)]
-            let io = unsafe { &mut *(&self.inner as *const T as *mut T) };
+            let io = unsafe { &mut *(self.inner.get()) };
             self.flush_fut.arm_future(io.shutdown());
         }
 
@@ -389,7 +386,7 @@ impl<T, B> FramedWrite<T, B> {
     }
 
     pub fn get_mut(&mut self) -> &mut T {
-        &mut self.inner
+        unsafe { &mut *(self.inner.get()) }
     }
 }
 
@@ -402,11 +399,11 @@ impl<T: AsyncReadRent + Unpin, B> AsyncReadRent for FramedWrite<T, B> {
     E: IoVecBufMut + 'a;
 
     fn read<F: IoBufMut>(&mut self, buf: F) -> Self::ReadFuture<'_, F> {
-        async move { self.inner.read(buf).await }
+        async move { self.inner.get_mut().read(buf).await }
     }
 
     fn readv<F: IoVecBufMut>(&mut self, buf: F) -> Self::ReadvFuture<'_, F> {
-        async move { self.inner.readv(buf).await }
+        async move { self.inner.get_mut().readv(buf).await }
     }
 }
 

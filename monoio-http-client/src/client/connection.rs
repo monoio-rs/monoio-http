@@ -156,7 +156,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                             let _ = data_tx.send(Some(r));
                         }
                         *handle = Some(framed_payload.get_source());
-                        
+
                         let resp = Response::from_parts(parts, framed_payload_rcvr.into());
                         (Ok(resp), false)
                     }
