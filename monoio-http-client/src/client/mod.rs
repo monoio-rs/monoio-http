@@ -170,7 +170,7 @@ pub struct ClientConfig {
 
 impl Default for Client {
     fn default() -> Self {
-        Builder::default().build_http1()
+        Builder::default().build_auto()
     }
 }
 
