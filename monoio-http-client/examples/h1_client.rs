@@ -1,6 +1,5 @@
 use http::{request::Builder, Method, Version};
 use monoio_http::common::body::{Body, FixedBody, HttpBody};
-use monoio_http_client::Client;
 use tracing_subscriber::FmtSubscriber;
 
 #[monoio::main(enable_timer = true)]

@@ -176,7 +176,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
             Self::H2(h) => {
                 let (parts, body) = request.into_parts();
                 #[cfg(feature = "logging")]
-                tracing::debug!("H2 conn manager Request {:?}", parts);
+                tracing::debug!("H2 conn manager Request:{:?}", parts);
                 let request = http::request::Request::from_parts(parts, ());
 
                 let handle = h.clone();
@@ -205,11 +205,9 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
 
                 match resp_fut.await {
                     Ok(resp) => {
-                        let (parts, body) = resp.into_parts();
                         #[cfg(feature = "logging")]
-                        tracing::debug!("H2 conn Response {parts:?}");
-                        let ret_resp = Response::from_parts(parts, body.into());
-                        (Ok(ret_resp), false)
+                        tracing::debug!("H2 Conn Response:");
+                        (Ok(HttpBody::response(resp)), false)
                     }
                     Err(e) => {
                         #[cfg(feature = "logging")]
