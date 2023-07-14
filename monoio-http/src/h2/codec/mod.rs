@@ -87,12 +87,12 @@ impl<T, B> Codec<T, B> {
     #[cfg(feature = "unstable")]
     #[inline]
     pub fn max_recv_frame_size(&self) -> usize {
-        self.inner.max_frame_size()
+        unsafe { &*self.inner.get() }.max_frame_size()
     }
 
     /// Returns the max frame size that can be sent to the peer.
-    pub fn max_send_frame_size(&mut self) -> usize {
-        self.inner.get_mut().get_mut().max_frame_size()
+    pub fn max_send_frame_size(&self) -> usize {
+        unsafe { &*self.inner.get() }.get_ref().max_frame_size()
     }
 
     /// Set the peer's max frame size.
@@ -113,7 +113,7 @@ impl<T, B> Codec<T, B> {
     /// Get a reference to the inner stream.
     #[cfg(feature = "unstable")]
     pub fn get_ref(&self) -> &T {
-        self.inner.get_ref().get_ref()
+        unsafe { &*self.inner.get() }.get_ref().get_ref()
     }
 
     /// Get a mutable reference to the inner stream.
