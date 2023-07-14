@@ -57,6 +57,12 @@ impl<T> FramedRead<T> {
         }
     }
 
+    #[inline]
+    pub fn get_ref(&self) -> &T {
+        self.inner.get_ref()
+    }
+
+    #[inline]
     pub fn get_mut(&mut self) -> &mut T {
         self.inner.get_mut()
     }

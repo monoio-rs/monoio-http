@@ -25,8 +25,6 @@ thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 local-sync = "0.1"
 
-async-stream = "0.3.5"
-
 # H2 crate dependencies
 futures-core = { version = "0.3", default-features = false }
 fnv = "1.0.5"
@@ -39,7 +37,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 quickcheck = { version = "1.0.3", default-features = false }
 rand = "0.8.4"
-env_logger = { version = "0.9", default-features = false }
+env_logger = { version = "0.10", default-features = false }
 hex = "0.4.3"
 
 tracing = "0.1"

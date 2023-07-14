@@ -416,7 +416,7 @@ mod unstable {
 
     impl<T, B> FramedWrite<T, B> {
         pub fn get_ref(&self) -> &T {
-            &self.inner
+            unsafe { &*self.inner.get() }
         }
     }
 }
