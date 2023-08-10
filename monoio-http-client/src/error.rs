@@ -10,7 +10,7 @@ pub enum Error {
     H1Decode(#[from] monoio_http::h1::codec::decoder::DecodeError),
     #[error("io error {0}")]
     Io(#[from] std::io::Error),
-    #[cfg(feature = "rustls")]
+    #[cfg(not(feature = "native-tls"))]
     #[error("rustls error {0}")]
     Rustls(#[from] monoio_rustls::TlsError),
     #[cfg(feature = "native-tls")]

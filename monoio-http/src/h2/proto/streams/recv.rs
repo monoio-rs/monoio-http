@@ -132,7 +132,7 @@ impl Recv {
         &mut self,
         id: StreamId,
         mode: Open,
-        counts: &mut Counts,
+        counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
         assert!(self.refused.is_none());
 

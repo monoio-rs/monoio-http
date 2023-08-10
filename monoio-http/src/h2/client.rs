@@ -1376,7 +1376,7 @@ impl PushPromises {
     #[doc(hidden)]
     pub fn poll_push_promise(
         &mut self,
-        cx: &mut Context<'_>,
+        cx: &Context<'_>,
     ) -> Poll<Option<Result<PushPromise, crate::h2::Error>>> {
         match self.inner.poll_pushed(cx) {
             Poll::Ready(Some(Ok((request, response)))) => {

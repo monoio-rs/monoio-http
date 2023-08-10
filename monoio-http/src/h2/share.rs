@@ -428,10 +428,7 @@ impl RecvStream {
     }
 
     /// Poll for the next data frame.
-    pub fn poll_data(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Bytes, crate::h2::Error>>> {
+    pub fn poll_data(&mut self, cx: &Context<'_>) -> Poll<Option<Result<Bytes, crate::h2::Error>>> {
         self.inner.inner.poll_data(cx).map_err(Into::into)
     }
 

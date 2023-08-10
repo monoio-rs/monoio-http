@@ -11,10 +11,9 @@ name = "monoio-http-client"
 version = "0.2.2"
 
 [dependencies]
-
 monoio = { version = "0.1.5" }
 monoio-http = { version = "0.2.0", path = "../monoio-http" }
-monoio-rustls = { version = "0.1.2", optional = true }
+monoio-rustls = { version = "0.1.2" }
 monoio-native-tls = { version = "0.1.0", optional = true }
 service-async = { version = "0.1.2" }
 
@@ -25,27 +24,25 @@ serde = "1"
 serde_json = "1"
 smol_str = "0.2"
 thiserror = "1"
-rustls = { version = "0", default-features = false, optional = true, features = [
+rustls = { version = "0", default-features = false, features = [
     "dangerous_configuration",
 ] }
 tracing = { version = "0.1", optional = true }
-webpki-roots = { version = "0.23", optional = true }
+webpki-roots = "0.23"
 native-tls = { version = "0.2", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
-tracing = { version = "0.1" }
-tracing-subscriber = { version = "0.3" }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [features]
-default = ["rustls", "time"]
+default = ["time"]
 # Enable this feature to make connection pool periodically checking works.
 # You must enable time driver to use it.
 time = []
 
 # Note: rustls and native-tls cannot be enabled at the same time
-rustls = ["dep:rustls", "webpki-roots", "monoio-rustls"]
-rustls-unsafe-io = ["rustls", "monoio-rustls?/unsafe_io"]
+rustls-unsafe-io = ["monoio-rustls/unsafe_io"]
 native-tls = ["dep:native-tls", "monoio-native-tls"]
-
-logging = ["tracing", "monoio-rustls?/logging"]
+logging = ["tracing", "monoio-rustls/logging"]

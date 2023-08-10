@@ -2,11 +2,12 @@ pub mod connection;
 pub mod connector;
 pub mod key;
 pub mod pool;
+pub mod unified;
 
 use std::rc::Rc;
 
 use bytes::Bytes;
-use http::{uri::Scheme, HeaderMap};
+use http::HeaderMap;
 use monoio_http::common::{
     body::{Body, HttpBody},
     error::HttpError,
@@ -15,26 +16,30 @@ use monoio_http::common::{
 };
 
 use self::{
-    connector::{Connector, DefaultTcpConnector, DefaultTlsConnector},
+    connector::{Connector, PooledConnector},
     key::Key,
+    pool::PooledConnection,
+    unified::{UnifiedTransportConnection, UnifiedTransportConnector},
 };
 use crate::request::ClientRequest;
 
-pub struct ClientInner<C, #[cfg(any(feature = "rustls", feature = "native-tls"))] CS> {
+#[derive(Debug)]
+pub struct ClientInner<C> {
     cfg: ClientConfig,
-    http_connector: C,
-    #[cfg(any(feature = "rustls", feature = "native-tls"))]
-    https_connector: CS,
+    connector: PooledConnector<C, Key, UnifiedTransportConnection>,
 }
 
-pub struct Client<
-    C = DefaultTcpConnector<Key>,
-    #[cfg(any(feature = "rustls", feature = "native-tls"))] CS = DefaultTlsConnector<Key>,
-> {
-    #[cfg(any(feature = "rustls", feature = "native-tls"))]
-    shared: Rc<ClientInner<C, CS>>,
-    #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
+pub struct Client<C = UnifiedTransportConnector> {
     shared: Rc<ClientInner<C>>,
+}
+
+// Impl Clone manually because C does not have to be Clone
+impl<C> Clone for Client<C> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -70,147 +75,101 @@ impl Builder {
         Self::default()
     }
 
-    pub fn http1_client(&mut self) -> &mut Self {
+    pub fn http1_client(mut self) -> Self {
         self.connection_config.proto = Proto::Http1;
         self
     }
 
-    pub fn http2_client(&mut self) -> &mut Self {
+    pub fn http2_client(mut self) -> Self {
         self.connection_config.proto = Proto::Http2;
         self
     }
 
-    pub fn http_auto(&mut self) -> &mut Self {
+    pub fn http_auto(mut self) -> Self {
         self.connection_config.proto = Proto::Auto;
         self
     }
 
-    pub fn max_idle_connections(&mut self, conns: usize) -> &mut Self {
+    pub fn max_idle_connections(mut self, conns: usize) -> Self {
         self.global_config.max_idle_connections = conns;
         self
     }
 
-    pub fn http2_max_frame_size(&mut self, sz: u32) -> &mut Self {
+    pub fn http2_max_frame_size(mut self, sz: u32) -> Self {
         self.connection_config.h2_builder.max_frame_size(sz);
         self
     }
 
-    pub fn http2_max_send_buf_size(&mut self, sz: usize) -> &mut Self {
+    pub fn http2_max_send_buf_size(mut self, sz: usize) -> Self {
         self.connection_config.h2_builder.max_send_buffer_size(sz);
         self
     }
 
-    pub fn http2_max_concurrent_reset_streams(&mut self, max: usize) -> &mut Self {
+    pub fn http2_max_concurrent_reset_streams(mut self, max: usize) -> Self {
         self.connection_config.h2_builder.max_send_buffer_size(max);
         self
     }
 
-    pub fn http2_initial_stream_window_size(&mut self, size: u32) -> &mut Self {
+    pub fn http2_initial_stream_window_size(mut self, size: u32) -> Self {
         self.connection_config.h2_builder.initial_window_size(size);
         self
     }
 
-    pub fn http2_initial_connection_window_size(&mut self, size: u32) -> &mut Self {
+    pub fn http2_initial_connection_window_size(mut self, size: u32) -> Self {
         self.connection_config
             .h2_builder
             .initial_connection_window_size(size);
         self
     }
 
-    pub fn http2_max_concurrent_streams(&mut self, max: u32) -> &mut Self {
+    pub fn http2_max_concurrent_streams(mut self, max: u32) -> Self {
         self.connection_config
             .h2_builder
             .max_concurrent_streams(max);
         self
     }
 
-    pub fn build_http1(self) -> Client {
+    pub fn build(self) -> Client {
         Client::new(self.global_config, self.connection_config)
     }
 
-    pub fn build_http2(mut self) -> Client {
-        self.http2_client();
-        Client::new(self.global_config, self.connection_config)
-    }
-
-    pub fn build_auto(mut self) -> Client {
-        self.http_auto();
-        Client::new(self.global_config, self.connection_config)
+    pub fn build_with_connector<C>(self, connector: C) -> Client<C> {
+        let shared = Rc::new(ClientInner {
+            cfg: ClientConfig::default(),
+            connector: PooledConnector::new(self.global_config, self.connection_config, connector),
+        });
+        Client { shared }
     }
 }
 
-macro_rules! client_clone_impl {
-    ( $( $x:item )* ) => {
-        #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<C> Clone for Client<C>
-        {
-            $($x)*
-        }
-
-        #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<C, CS> Clone for Client<C, CS>
-        {
-            $($x)*
-        }
-    };
-}
-
-client_clone_impl! {
-    fn clone(&self) -> Self {
-        Self {
-            shared: self.shared.clone(),
-        }
-    }
-}
-
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct ClientConfig {
     default_headers: Rc<HeaderMap>,
 }
 
 impl Default for Client {
     fn default() -> Self {
-        Builder::default().build_auto()
+        Builder::default().build()
     }
 }
 
 impl Client {
-    fn new(g_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
+    fn new(g_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Client {
         let shared = Rc::new(ClientInner {
             cfg: ClientConfig::default(),
-            http_connector: DefaultTcpConnector::new(g_config.clone(), c_config.clone()),
-            #[cfg(any(feature = "rustls", feature = "native-tls"))]
-            https_connector: DefaultTlsConnector::new(g_config, c_config),
+            connector: PooledConnector::new_default(g_config, c_config),
         });
-        Self { shared }
+        Client { shared }
     }
 
-    pub async fn send_request<B: Body<Data = Bytes, Error = HttpError> + 'static>(
-        &self,
-        req: Request<B>,
-    ) -> crate::Result<Response<HttpBody>> {
-        let mut key: Key = req.uri().try_into()?;
-        key.set_version(req.version());
-
-        match req.uri().scheme() {
-            Some(s) if s == &Scheme::HTTP => {
-                let conn = self.shared.http_connector.connect(key).await?;
-                conn.send_request(req).await
-            }
-            #[cfg(any(feature = "rustls", feature = "native-tls"))]
-            Some(s) if s == &Scheme::HTTPS => {
-                let conn = self.shared.https_connector.connect(key).await?;
-                conn.send_request(req).await
-            }
-            // Key creation should error first
-            _ => unreachable!(),
-        }
+    pub fn builder() -> Builder {
+        Builder::new()
     }
 }
 
 macro_rules! http_method {
     ($fn: ident, $method: expr) => {
-        pub fn $fn<U>(&self, uri: U) -> ClientRequest<C, CS>
+        pub fn $fn<U>(&self, uri: U) -> ClientRequest<C>
         where
             http::Uri: TryFrom<U>,
             <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
@@ -220,61 +179,44 @@ macro_rules! http_method {
     };
 }
 
-macro_rules! client_impl {
-    ( $( $x:item )* ) => {
-        #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<C> Client<B, C> {
-            $($x)*
-        }
-
-        #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<C, CS> Client<C, CS> {
-            $($x)*
-        }
-    };
-}
-
-client_impl! {
+impl<C> Client<C> {
     http_method!(get, http::Method::GET);
     http_method!(post, http::Method::POST);
     http_method!(put, http::Method::PUT);
     http_method!(patch, http::Method::PATCH);
     http_method!(delete, http::Method::DELETE);
     http_method!(head, http::Method::HEAD);
-}
 
-#[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-impl<B: Body<Data = Bytes, Error = HttpError>, C> Client<B, C> {
-    pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<B, C>
+    pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<C>
     where
         http::Method: TryFrom<M>,
         <http::Method as TryFrom<M>>::Error: Into<http::Error>,
         http::Uri: TryFrom<U>,
         <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
     {
-        let mut req = ClientRequest::new(self.clone()).method(method).uri(uri);
-        for (key, value) in self.shared.cfg.default_headers.iter() {
-            req = req.header(key, value);
-        }
-        req
-    }
-}
-
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-impl<C, CS> Client<C, CS> {
-    pub fn request<M, U>(&self, method: M, uri: U) -> ClientRequest<C, CS>
-    where
-        http::Method: TryFrom<M>,
-        <http::Method as TryFrom<M>>::Error: Into<http::Error>,
-        http::Uri: TryFrom<U>,
-        <http::Uri as TryFrom<U>>::Error: Into<http::Error>,
-    {
-        let mut req = ClientRequest::<C, CS>::new(self.clone())
+        let mut req = ClientRequest::<C>::new(self.clone())
             .method(method)
             .uri(uri);
         for (key, value) in self.shared.cfg.default_headers.iter() {
             req = req.header(key, value);
         }
         req
+    }
+
+    pub async fn send_request<B: Body<Data = Bytes, Error = HttpError> + 'static>(
+        &self,
+        req: Request<B>,
+    ) -> crate::Result<Response<HttpBody>>
+    where
+        PooledConnector<C, Key, UnifiedTransportConnection>: Connector<
+            Key,
+            Connection = PooledConnection<Key, UnifiedTransportConnection>,
+            Error = crate::Error,
+        >,
+    {
+        let mut key: Key = req.uri().try_into()?;
+        key.version = req.version();
+        let conn = self.shared.connector.connect(key).await?;
+        conn.send_request(req).await
     }
 }

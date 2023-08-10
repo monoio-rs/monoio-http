@@ -416,11 +416,7 @@ impl Inner {
                     }
                 }
 
-                match self
-                    .actions
-                    .recv
-                    .open(id, Open::Headers, &mut self.counts)?
-                {
+                match self.actions.recv.open(id, Open::Headers, &self.counts)? {
                     Some(stream_id) => {
                         let stream = Stream::new(
                             stream_id,
@@ -731,7 +727,7 @@ impl Inner {
         if self
             .actions
             .recv
-            .open(promised_id, Open::PushPromise, &mut self.counts)?
+            .open(promised_id, Open::PushPromise, &self.counts)?
             .is_none()
         {
             return Ok(());
