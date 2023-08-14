@@ -63,7 +63,7 @@ impl ClientResponse {
 
     /// Get the full response body as `Bytes`.
     pub async fn bytes(self) -> crate::Result<Bytes> {
-        let mut body = self.body;
+        let body = self.body;
         body.bytes().await.map_err(Into::into)
     }
 
@@ -76,7 +76,7 @@ impl ClientResponse {
     // Note: using from_reader to read discontinuous data pays more
     // than using from_slice. So here we read the entire content into
     // a Bytes and call from_slice.
-    pub async fn json<T: serde::de::DeserializeOwned>(mut self) -> crate::Result<T> {
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> crate::Result<T> {
         let bytes = self.body.bytes().await?;
         let d = serde_json::from_slice(&bytes)?;
         Ok(d)

@@ -24,6 +24,8 @@ memchr = "2.5"
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 local-sync = "0.1"
+flate2 = "1"
+brotli = "3.3"
 
 # H2 crate dependencies
 futures-core = { version = "0.3", default-features = false }

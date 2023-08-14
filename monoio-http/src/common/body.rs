@@ -1,4 +1,10 @@
+use std::io::{Read, Write};
+
 use bytes::{Bytes, BytesMut};
+use flate2::{
+    read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder},
+    Compression,
+};
 use futures_core::Future;
 use http::Response;
 use monoio::buf::IoBuf;
@@ -32,27 +38,31 @@ pub trait Body {
 pub type Chunks = SmallVec<[Bytes; 16]>;
 
 pub trait BodyExt: Body {
-    type BytesFuture<'a>: Future<Output = Result<Bytes, Self::Error>>
-    where
-        Self: 'a;
+    type BytesFuture: Future<Output = Result<Bytes, Self::Error>>;
     type ChunksFuture<'a>: Future<Output = Result<Chunks, Self::Error>>
     where
         Self: 'a;
-    /// Return continues memory
-    fn bytes(&mut self) -> Self::BytesFuture<'_>;
+    /// Consumes body and return continous memory
+    fn bytes(self) -> Self::BytesFuture;
     /// Return bytes array
     fn chunks(&mut self) -> Self::ChunksFuture<'_>;
+    /// Consumes body and returns decodec content   
+    fn decode_content(self, content_encoding: String) -> Self::BytesFuture;
+    /// Consumes body and returns encoded content   
+    fn encode_content(self, accept_encoding: String) -> Self::BytesFuture;
 }
 
-impl<T: Body<Data = Bytes>> BodyExt for T {
-    type BytesFuture<'a> = impl Future<Output = Result<Bytes, Self::Error>> + 'a
-    where
-        Self: 'a;
+impl<T> BodyExt for T
+where
+    T: Body<Data = Bytes> + FixedBody + Sized,
+    T::Error: From<std::io::Error>,
+{
+    type BytesFuture = impl Future<Output = Result<Bytes, Self::Error>>;
     type ChunksFuture<'a> = impl Future<Output = Result<Chunks, Self::Error>> + 'a
     where
         Self: 'a;
 
-    fn bytes(&mut self) -> Self::BytesFuture<'_> {
+    fn bytes(mut self) -> Self::BytesFuture {
         async move {
             match self.stream_hint() {
                 StreamHint::None => Ok(Bytes::new()),
@@ -92,6 +102,81 @@ impl<T: Body<Data = Bytes>> BodyExt for T {
                     Ok(chunks)
                 }
             }
+        }
+    }
+
+    fn decode_content(self, encoding: String) -> Self::BytesFuture {
+        async move {
+            let buf = self.bytes().await?;
+            match encoding.as_str() {
+                "gzip" => {
+                    let mut decoder = GzDecoder::new(buf.as_ref());
+                    let mut decompressed_data = Vec::new();
+                    decoder.read_to_end(&mut decompressed_data)?;
+                    Ok(bytes::Bytes::from(decompressed_data))
+                }
+                "deflate" => {
+                    let mut decoder = ZlibDecoder::new(buf.as_ref());
+                    let mut decompressed_data = Vec::new();
+                    decoder.read_to_end(&mut decompressed_data)?;
+                    Ok(bytes::Bytes::from(decompressed_data))
+                }
+                "br" => {
+                    let mut decoder = brotli::Decompressor::new(buf.as_ref(), 4096);
+                    let mut decompressed_data = Vec::new();
+                    decoder.read_to_end(&mut decompressed_data)?;
+                    Ok(bytes::Bytes::from(decompressed_data))
+                }
+                _ => {
+                    // Unsupported or no encoding, return original data
+                    Ok(buf)
+                }
+            }
+        }
+    }
+
+    fn encode_content(self, accept_encoding: String) -> Self::BytesFuture {
+        async move {
+            let buf = self.bytes().await?;
+            let accepted_encodings: Vec<String> = accept_encoding
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            let supported_encodings = vec!["gzip", "br", "deflate"];
+            // Find the first supported encoding from the accepted encodings
+            let selected_encoding = accepted_encodings
+                .iter()
+                .find(|&encoding| supported_encodings.contains(&encoding.as_str()))
+                .cloned()
+                .unwrap_or_else(|| "identity".to_string());
+
+            let encoded_data = match selected_encoding.as_str() {
+                "gzip" => {
+                    let mut encoder = GzEncoder::new(buf.as_ref(), Compression::best());
+                    let mut compressed_data = Vec::new();
+                    encoder.read_to_end(&mut compressed_data)?;
+                    compressed_data
+                }
+                "deflate" => {
+                    let mut encoder = ZlibEncoder::new(buf.as_ref(), Compression::best());
+                    let mut compressed_data = Vec::new();
+                    encoder.read_to_end(&mut compressed_data)?;
+                    compressed_data
+                }
+                "br" => {
+                    let mut buf = buf.to_vec();
+                    let mut decoder = brotli::CompressorWriter::new(&mut buf, 4096, 11, 22);
+                    let mut compressed_data = Vec::new();
+                    decoder.write_all(&mut compressed_data)?;
+                    compressed_data
+                }
+                _ => {
+                    // Unsupported or no encoding, return original data
+                    buf.to_vec()
+                }
+            };
+
+            Ok(bytes::Bytes::from(encoded_data))
         }
     }
 }
@@ -177,14 +262,12 @@ impl Body for HttpBody {
     }
 }
 
-pub trait FixedBody {
-    type BodyType: Body;
-    fn fixed_body(data: Option<Bytes>) -> Self::BodyType;
+pub trait FixedBody: Body {
+    fn fixed_body(data: Option<Bytes>) -> Self;
 }
 
 impl FixedBody for HttpBody {
-    type BodyType = Self;
-    fn fixed_body(data: Option<Bytes>) -> Self::BodyType {
+    fn fixed_body(data: Option<Bytes>) -> Self {
         Self::Ready(data)
     }
 }
