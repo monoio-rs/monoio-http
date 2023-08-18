@@ -17,7 +17,7 @@ use crate::{
     h2::RecvStream,
 };
 
-const supported_encodings: [&str; 3] = ["gzip", "br", "deflate"];
+const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "br", "deflate"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamHint {
@@ -148,7 +148,7 @@ where
             // Find the first supported encoding from the accepted encodings
             let selected_encoding = accepted_encodings
                 .iter()
-                .find(|&encoding| supported_encodings.contains(&encoding.as_str()))
+                .find(|&encoding| SUPPORTED_ENCODINGS.contains(&encoding.as_str()))
                 .cloned()
                 .unwrap_or_else(|| "identity".to_string());
 
