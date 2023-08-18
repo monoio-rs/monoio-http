@@ -32,7 +32,7 @@ const CONN_CLOSE: &[u8] = b"close";
 type Conns<K, IO> = Rc<UnsafeCell<SharedInner<K, IO>>>;
 type WeakConns<K, IO> = Weak<UnsafeCell<SharedInner<K, IO>>>;
 
-struct IdleConnection<IO: AsyncWriteRent + AsyncReadRent + Split> {
+struct IdleConnection<IO: AsyncWriteRent> {
     conn: HttpConnection<IO>,
     idle_at: Instant,
 }
@@ -51,14 +51,14 @@ impl<IO: AsyncWriteRent + AsyncReadRent + Split> IdleConnection<IO> {
     }
 }
 
-struct SharedInner<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
+struct SharedInner<K, IO: AsyncWriteRent> {
     mapping: HashMap<K, VecDeque<IdleConnection<IO>>>,
     max_idle: usize,
     #[cfg(feature = "time")]
     _drop: local_sync::oneshot::Receiver<()>,
 }
 
-impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> SharedInner<K, IO> {
+impl<K, IO: AsyncWriteRent> SharedInner<K, IO> {
     #[cfg(feature = "time")]
     fn new(max_idle: Option<usize>) -> (local_sync::oneshot::Sender<()>, Self) {
         let mapping = HashMap::with_capacity(DEFAULT_POOL_SIZE);
@@ -94,15 +94,12 @@ impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> SharedI
     }
 }
 
-// TODO: Connection leak? Maybe remove expired connection periodically.
 #[derive(Debug)]
-pub struct ConnectionPool<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
+pub struct ConnectionPool<K, IO: AsyncWriteRent> {
     conns: Conns<K, IO>,
 }
 
-impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> Clone
-    for ConnectionPool<K, IO>
-{
+impl<K, IO: AsyncWriteRent> Clone for ConnectionPool<K, IO> {
     fn clone(&self) -> Self {
         Self {
             conns: self.conns.clone(),
@@ -110,9 +107,7 @@ impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> Clone
     }
 }
 
-impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Split + 'static>
-    ConnectionPool<K, IO>
-{
+impl<K: 'static, IO: AsyncWriteRent + 'static> ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn new(idle_interval: Option<Duration>, max_idle: Option<usize>) -> Self {
         let (tx, inner) = SharedInner::new(max_idle);
@@ -135,9 +130,7 @@ impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Spli
     }
 }
 
-impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Split + 'static> Default
-    for ConnectionPool<K, IO>
-{
+impl<K: 'static, IO: AsyncWriteRent + 'static> Default for ConnectionPool<K, IO> {
     #[cfg(feature = "time")]
     fn default() -> Self {
         Self::new(None, None)
@@ -149,11 +142,7 @@ impl<K: Hash + Eq + Display + 'static, IO: AsyncWriteRent + AsyncReadRent + Spli
     }
 }
 
-pub struct PooledConnection<K, IO>
-where
-    K: Hash + Eq + Display,
-    IO: AsyncWriteRent + AsyncReadRent + Split,
-{
+pub struct PooledConnection<K: Hash + Eq + Display, IO: AsyncWriteRent> {
     // option is for take when drop
     key: Option<K>,
     conn: Option<HttpConnection<IO>>,
@@ -196,11 +185,7 @@ where
     }
 }
 
-impl<K, IO> Drop for PooledConnection<K, IO>
-where
-    K: Hash + Eq + Display,
-    IO: AsyncWriteRent + AsyncReadRent + Split,
-{
+impl<K: Hash + Eq + Display, IO: AsyncWriteRent> Drop for PooledConnection<K, IO> {
     fn drop(&mut self) {
         if !self.reusable && !self.remove_h2 {
             #[cfg(feature = "logging")]
@@ -316,16 +301,14 @@ where
 }
 
 // TODO: make interval not eq to idle_dur
-struct IdleTask<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> {
+struct IdleTask<K, IO: AsyncWriteRent> {
     tx: local_sync::oneshot::Sender<()>,
     conns: WeakConns<K, IO>,
     interval: monoio::time::Interval,
     idle_dur: Duration,
 }
 
-impl<K: Hash + Eq + Display, IO: AsyncWriteRent + AsyncReadRent + Split> Future
-    for IdleTask<K, IO>
-{
+impl<K, IO: AsyncWriteRent> Future for IdleTask<K, IO> {
     type Output = ();
 
     fn poll(

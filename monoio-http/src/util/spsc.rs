@@ -63,7 +63,7 @@ impl<T> Default for Shared<T> {
 
 impl<T> SPSCReceiver<T> {
     /// None: closed; Some: item
-    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+    pub fn poll_recv(&mut self, cx: &Context<'_>) -> Poll<Option<T>> {
         let inner = unsafe { &mut *self.inner.get() };
         // If we can get something from slot:
         //  1. take it and clear receiver_waker
@@ -118,7 +118,7 @@ impl<'a, T> Future for Recv<'a, T> {
 
 impl<T> SPSCSender<T> {
     /// None: closed; Some: the slot is empty
-    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Option<()>> {
+    pub fn poll_ready(&mut self, cx: &Context<'_>) -> Poll<Option<()>> {
         let inner = unsafe { &mut *self.inner.get() };
         // If closed:
         //  1. return None
@@ -136,7 +136,7 @@ impl<T> SPSCSender<T> {
         Poll::Ready(Some(()))
     }
 
-    pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_closed(&mut self, cx: &Context<'_>) -> Poll<()> {
         let inner = unsafe { &mut *self.inner.get() };
         // If closed:
         //  1. return

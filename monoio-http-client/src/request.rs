@@ -2,41 +2,23 @@ use bytes::Bytes;
 use http::{header::HeaderName, request::Builder, HeaderValue, Method, Uri};
 use monoio_http::common::body::{FixedBody, HttpBody};
 
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-use crate::client::connector::DefaultTlsConnector;
 use crate::{
-    client::{connector::DefaultTcpConnector, key::Key, Client},
+    client::{
+        connector::PooledConnector, key::Key, pool::PooledConnection,
+        unified::UnifiedTransportConnector, Client,
+    },
     response::ClientResponse,
+    unified::UnifiedTransportConnection,
+    Connector,
 };
 
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-pub struct ClientRequest<C = DefaultTcpConnector<Key>, CS = DefaultTlsConnector<Key>> {
-    client: Client<C, CS>,
-    builder: Builder,
-}
-
-#[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-pub struct ClientRequest<B, C = DefaultTcpConnector<Key>> {
+pub struct ClientRequest<C = UnifiedTransportConnector> {
     client: Client<C>,
     builder: Builder,
 }
 
-macro_rules! client_request_impl {
-    ( $( $x:item )* ) => {
-        #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
-        impl<C> ClientRequest<C> {
-            $($x)*
-        }
-
-        #[cfg(any(feature = "rustls", feature = "native-tls"))]
-        impl<C, CS> ClientRequest<C, CS> {
-            $($x)*
-        }
-    };
-}
-
-client_request_impl! {
-    pub fn new(client: Client<C, CS> ) -> Self {
+impl<C> ClientRequest<C> {
+    pub fn new(client: Client<C>) -> Self {
         Self {
             client,
             builder: Builder::new(),
@@ -85,7 +67,14 @@ client_request_impl! {
     }
 }
 
-impl ClientRequest {
+impl<C> ClientRequest<C>
+where
+    PooledConnector<C, Key, UnifiedTransportConnection>: Connector<
+        Key,
+        Connection = PooledConnection<Key, UnifiedTransportConnection>,
+        Error = crate::Error,
+    >,
+{
     pub async fn send(self) -> crate::Result<ClientResponse> {
         let request = Self::build_request(self.builder, HttpBody::fixed_body(None))?;
         let resp = self.client.send_request(request).await?;

@@ -15,7 +15,7 @@ async fn main() {
     // Looks at the version header to determine the type of connection.
     // Will default to HTTP1_1
 
-    let h1_client = monoio_http_client::Builder::new().build_auto();
+    let h1_client = monoio_http_client::Builder::new().http_auto().build();
     let client1 = h1_client.clone();
     let client2 = h1_client.clone();
 
@@ -53,7 +53,7 @@ async fn main() {
 
         let request = Builder::new()
             .method(Method::GET)
-            .uri("http://127.0.0.1:8080/")
+            .uri("https://httpbin.org/html")
             .version(Version::HTTP_2)
             .body(body)
             .unwrap();

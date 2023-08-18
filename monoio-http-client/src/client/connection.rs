@@ -16,8 +16,6 @@ use monoio_http::{
     h2::{client::SendRequest, SendStream},
 };
 
-use crate::Error;
-
 pub struct StreamBodyTask<B: Body> {
     stream_pipe: SendStream<Bytes>,
     body: B,
@@ -116,7 +114,7 @@ impl<B: Body<Data = Bytes>> StreamBodyTask<B> {
     }
 }
 
-pub enum HttpConnection<IO: AsyncReadRent + AsyncWriteRent + Split> {
+pub enum HttpConnection<IO: AsyncWriteRent> {
     H1(Option<ClientCodec<IO>>),
     H2(SendRequest<Bytes>),
 }
@@ -133,7 +131,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
             Self::H1(ref mut handle) => {
                 let mut h = match handle.take() {
                     Some(h) => h,
-                    None => return (Err(Error::MissingCodec), false),
+                    None => return (Err(crate::Error::MissingCodec), false),
                 };
 
                 if let Err(e) = h.send_and_flush(request).await {

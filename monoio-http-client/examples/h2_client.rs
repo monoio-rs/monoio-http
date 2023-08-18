@@ -14,7 +14,7 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set up the tracing subscriber");
 
-    let h2_client = monoio_http_client::Builder::new().build_http2();
+    let h2_client = monoio_http_client::Builder::new().http2_client().build();
     let mut first = true;
 
     for _ in 0..6 {

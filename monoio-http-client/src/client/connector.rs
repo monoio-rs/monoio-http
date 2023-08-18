@@ -3,14 +3,14 @@ use std::{
     future::Future,
     hash::Hash,
     io,
-    marker::PhantomData,
     net::ToSocketAddrs,
+    path::Path,
 };
 
 use http::Version;
 use monoio::{
     io::{AsyncReadRent, AsyncWriteRent, Split},
-    net::TcpStream,
+    net::{TcpStream, UnixStream},
 };
 use monoio_http::h1::codec::ClientCodec;
 
@@ -20,15 +20,12 @@ use super::{
     pool::{ConnectionPool, PooledConnection},
     ClientGlobalConfig, ConnectionConfig, Proto,
 };
-#[cfg(feature = "rustls")]
-pub type TlsStream = monoio_rustls::ClientTlsStream<TcpStream>;
 
-#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-pub type TlsStream = monoio_native_tls::TlsStream<TcpStream>;
+#[cfg(not(feature = "native-tls"))]
+pub type TlsStream<C> = monoio_rustls::ClientTlsStream<C>;
 
-pub type DefaultTcpConnector<T> = PooledConnector<TcpConnector, T, TcpStream>;
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-pub type DefaultTlsConnector<T> = PooledConnector<TlsConnector, T, TlsStream>;
+#[cfg(feature = "native-tls")]
+pub type TlsStream<C> = monoio_native_tls::TlsStream<C>;
 
 pub trait Connector<K> {
     type Connection;
@@ -52,23 +49,43 @@ where
     type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
-        async move { TcpStream::connect(key).await }
+        TcpStream::connect(key)
     }
 }
 
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
+#[derive(Default, Clone, Debug)]
+pub struct UnixConnector;
+
+impl<P> Connector<P> for UnixConnector
+where
+    P: AsRef<Path>,
+{
+    type Connection = UnixStream;
+    type Error = io::Error;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where P: 'a;
+
+    fn connect(&self, key: P) -> Self::ConnectionFuture<'_> {
+        UnixStream::connect(key)
+    }
+}
+
 #[derive(Clone)]
-pub struct TlsConnector {
-    tcp_connector: TcpConnector,
-    #[cfg(feature = "rustls")]
+pub struct TlsConnector<C> {
+    inner_connector: C,
+    #[cfg(not(feature = "native-tls"))]
     tls_connector: monoio_rustls::TlsConnector,
-    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    #[cfg(feature = "native-tls")]
     tls_connector: monoio_native_tls::TlsConnector,
 }
 
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-impl Default for TlsConnector {
-    #[cfg(feature = "rustls")]
+impl<C: Debug> std::fmt::Debug for TlsConnector<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TlsConnector, inner: {:?}", self.inner_connector)
+    }
+}
+
+impl<C: Default> Default for TlsConnector<C> {
+    #[cfg(not(feature = "native-tls"))]
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
@@ -85,53 +102,57 @@ impl Default for TlsConnector {
             .with_no_client_auth();
 
         Self {
-            tcp_connector: TcpConnector,
+            inner_connector: Default::default(),
             tls_connector: cfg.into(),
         }
     }
 
-    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    #[cfg(feature = "native-tls")]
     fn default() -> Self {
         Self {
-            tcp_connector: TcpConnector,
+            inner_connector: Default::default(),
             tls_connector: native_tls::TlsConnector::builder().build().unwrap().into(),
         }
     }
 }
 
-#[cfg(feature = "rustls")]
-impl<T> Connector<T> for TlsConnector
+#[cfg(not(feature = "native-tls"))]
+impl<C, T> Connector<T> for TlsConnector<C>
 where
-    T: ToSocketAddrs + service_async::Param<rustls::ServerName>,
+    T: service_async::Param<super::key::ServerName>,
+    C: Connector<T, Error = std::io::Error>,
+    C::Connection: AsyncReadRent + AsyncWriteRent,
 {
-    type Connection = TlsStream;
+    type Connection = TlsStream<C::Connection>;
     type Error = monoio_rustls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a, T: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
         let server_name = key.param();
         async move {
-            let stream = self.tcp_connector.connect(key).await?;
+            let stream = self.inner_connector.connect(key).await?;
             let tls_stream = self.tls_connector.connect(server_name, stream).await?;
             Ok(tls_stream)
         }
     }
 }
 
-#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-impl<T> Connector<T> for TlsConnector
+#[cfg(feature = "native-tls")]
+impl<C, T> Connector<T> for TlsConnector<C>
 where
-    T: ToSocketAddrs + service_async::Param<String>,
+    T: service_async::Param<super::key::ServerName>,
+    C: Connector<T, Error = std::io::Error>,
+    C::Connection: AsyncReadRent + AsyncWriteRent,
 {
-    type Connection = TlsStream;
+    type Connection = TlsStream<C::Connection>;
     type Error = monoio_native_tls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
+    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a, T: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
         let server_name = key.param();
         async move {
-            let stream = self.tcp_connector.connect(key).await?;
-            let tls_stream = self.tls_connector.connect(&server_name, stream).await?;
+            let stream = self.inner_connector.connect(key).await?;
+            let tls_stream = self.tls_connector.connect(&server_name.0, stream).await?;
             Ok(tls_stream)
         }
     }
@@ -182,48 +203,55 @@ impl HttpConnector {
 /// PooledConnector does 2 things:
 /// 1. pool
 /// 2. combine connection with codec(of cause with buffer)
-pub struct PooledConnector<TC, K, IO>
-where
-    K: Hash + Eq + Display,
-    IO: AsyncWriteRent + AsyncReadRent + Split,
-{
+pub struct PooledConnector<TC, K, IO: AsyncWriteRent> {
     global_config: ClientGlobalConfig,
     transport_connector: TC,
     http_connector: HttpConnector,
     pool: ConnectionPool<K, IO>,
-    _phantom: PhantomData<IO>,
 }
 
-impl<C, K, IO> Clone for PooledConnector<C, K, IO>
-where
-    K: Hash + Eq + Display,
-    IO: AsyncReadRent + AsyncWriteRent + Split,
-    C: Clone,
-{
+impl<TC: Clone, K, IO: AsyncWriteRent> Clone for PooledConnector<TC, K, IO> {
     fn clone(&self) -> Self {
         Self {
             global_config: self.global_config.clone(),
             transport_connector: self.transport_connector.clone(),
             http_connector: self.http_connector.clone(),
             pool: self.pool.clone(),
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<TC, K, IO> PooledConnector<TC, K, IO>
+impl<TC, K, IO: AsyncWriteRent> std::fmt::Debug for PooledConnector<TC, K, IO> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PooledConnector")
+    }
+}
+
+impl<TC, K: 'static, IO: AsyncWriteRent + 'static> PooledConnector<TC, K, IO>
 where
     TC: Default,
-    K: Hash + Eq + Display + 'static,
-    IO: AsyncReadRent + AsyncWriteRent + Split + 'static,
 {
-    pub fn new(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
+    pub fn new_default(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         Self {
             global_config,
             transport_connector: Default::default(),
             http_connector: HttpConnector::new(c_config),
-            pool: Default::default(),
-            _phantom: PhantomData,
+            pool: ConnectionPool::default(),
+        }
+    }
+}
+
+impl<TC, K: 'static, IO: AsyncWriteRent + 'static> PooledConnector<TC, K, IO> {
+    pub fn new(
+        global_config: ClientGlobalConfig,
+        c_config: ConnectionConfig,
+        connector: TC,
+    ) -> Self {
+        Self {
+            global_config,
+            transport_connector: connector,
+            http_connector: HttpConnector::new(c_config),
+            pool: ConnectionPool::default(),
         }
     }
 }
