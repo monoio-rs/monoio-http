@@ -250,20 +250,19 @@ where
 
         match conns.mapping.get_mut(key) {
             Some(v) => {
-                #[cfg(feature = "logging")]
-                tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
-                let mut pooled_conn = PooledConnection {
-                    key: Some(key.to_owned()),
-                    conn: None,
-                    pool: Rc::downgrade(&self.conns),
-                    reusable: true,
-                    remove_h2: false,
-                };
-                let idle_conn = v.pop_front();
-
-                match idle_conn {
+                match v.pop_front() {
                     Some(idle) => {
                         let (checkout_conn, readd_conn) = idle.reserve();
+
+                        #[cfg(feature = "logging")]
+                        tracing::debug!("connection got from pool for key: {:?} ", key.to_string());
+                        let mut pooled_conn = PooledConnection {
+                            key: Some(key.to_owned()),
+                            conn: Some(checkout_conn),
+                            pool: Rc::downgrade(&self.conns),
+                            reusable: true,
+                            remove_h2: false,
+                        };
 
                         // Add back the H2Connection so other request's can clone it
                         if let Some(idle) = readd_conn {
@@ -271,8 +270,6 @@ where
                             // No need to add back the H2Connection to the Pool
                             pooled_conn.reusable = false;
                         }
-
-                        pooled_conn.conn = Some(checkout_conn);
                         Some(pooled_conn)
                     }
                     None => None,
