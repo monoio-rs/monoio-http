@@ -49,7 +49,13 @@ where
     type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
 
     fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
-        TcpStream::connect(key)
+        async move {
+            TcpStream::connect(key).await.map(|io| {
+                // we will ignore the set nodelay error
+                let _ = io.set_nodelay(true);
+                io
+            })
+        }
     }
 }
 
