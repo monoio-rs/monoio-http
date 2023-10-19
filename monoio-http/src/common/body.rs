@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Cursor, Read};
 
 use bytes::{Bytes, BytesMut};
 use flate2::{
@@ -44,14 +44,16 @@ pub trait BodyExt: Body {
     type ChunksFuture<'a>: Future<Output = Result<Chunks, Self::Error>>
     where
         Self: 'a;
+    type DecodeFuture: Future<Output = Result<Bytes, Self::Error>>;
+    type EncodeFuture: Future<Output = Result<Bytes, Self::Error>>;
     /// Consumes body and return continous memory
     fn bytes(self) -> Self::BytesFuture;
     /// Return bytes array
     fn chunks(&mut self) -> Self::ChunksFuture<'_>;
-    /// Consumes body and returns decodec content   
-    fn decode_content(self, content_encoding: String) -> Self::BytesFuture;
-    /// Consumes body and returns encoded content   
-    fn encode_content(self, accept_encoding: String) -> Self::BytesFuture;
+    /// Consumes body and returns decodec content
+    fn decode_content(self, content_encoding: String) -> Self::DecodeFuture;
+    /// Consumes body and returns encoded content
+    fn encode_content(self, accept_encoding: String) -> Self::EncodeFuture;
 }
 
 impl<T> BodyExt for T
@@ -63,6 +65,8 @@ where
     type ChunksFuture<'a> = impl Future<Output = Result<Chunks, Self::Error>> + 'a
     where
         Self: 'a;
+    type DecodeFuture = impl Future<Output = Result<Bytes, Self::Error>>;
+    type EncodeFuture = impl Future<Output = Result<Bytes, Self::Error>>;
 
     fn bytes(mut self) -> Self::BytesFuture {
         async move {
@@ -107,7 +111,7 @@ where
         }
     }
 
-    fn decode_content(self, encoding: String) -> Self::BytesFuture {
+    fn decode_content(self, encoding: String) -> Self::DecodeFuture {
         async move {
             let buf = self.bytes().await?;
             match encoding.as_str() {
@@ -137,7 +141,7 @@ where
         }
     }
 
-    fn encode_content(self, accept_encoding: String) -> Self::BytesFuture {
+    fn encode_content(self, accept_encoding: String) -> Self::EncodeFuture {
         async move {
             let buf = self.bytes().await?;
             let accepted_encodings: Vec<String> = accept_encoding
@@ -166,10 +170,9 @@ where
                     compressed_data
                 }
                 "br" => {
-                    let mut buf = buf.to_vec();
-                    let mut decoder = brotli::CompressorWriter::new(&mut buf, 4096, 11, 22);
+                    let mut encoder = brotli::CompressorReader::new(Cursor::new(buf), 4096, 11, 22);
                     let mut compressed_data = Vec::new();
-                    decoder.write_all(&mut compressed_data)?;
+                    encoder.read_to_end(&mut compressed_data)?;
                     compressed_data
                 }
                 _ => {
