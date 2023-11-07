@@ -332,26 +332,26 @@ pub struct FramedPayload<T> {
     // The io provider.
     // Normally ClientCodec. Since we may want to reuse it later,
     // so we may require it to provide something we can do read.
-    io_source: T,
+    io_source: Rc<UnsafeCell<T>>,
     payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     eof: bool,
 }
 
 impl<T> FramedPayload<T> {
     pub fn new(
-        io_source: T,
+        io_source: Rc<UnsafeCell<T>>,
         payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     ) -> Self {
         Self {
-            io_source,
+            io_source: io_source.clone(),
             payload_decoder,
             eof: false,
         }
     }
 
-    pub fn get_source(self) -> T {
-        self.io_source
-    }
+    // pub fn get_source(self) -> T {
+    //     self.io_source
+    // }
 }
 
 impl<T> Body for FramedPayload<T>
@@ -375,14 +375,16 @@ where
                 PayloadDecoder::None => None,
                 PayloadDecoder::Fixed(decoder) => {
                     self.eof = true;
-                    match self.io_source.framed_mut().next_with(decoder).await {
+                    let io_source = unsafe { &mut *self.io_source.get() };
+                    match io_source.framed_mut().next_with(decoder).await {
                         None => Some(Err(DecodeError::UnexpectedEof.into())),
                         Some(Ok(item)) => Some(Ok(item)),
                         Some(Err(e)) => Some(Err(e.into())),
                     }
                 }
                 PayloadDecoder::Streamed(decoder) => {
-                    match self.io_source.framed_mut().next_with(decoder).await {
+                    let io_source = unsafe { &mut *self.io_source.get() };
+                    match io_source.framed_mut().next_with(decoder).await {
                         None => Some(Err(DecodeError::UnexpectedEof.into())),
                         Some(Ok(Some(item))) => Some(Ok(item)),
                         Some(Ok(None)) => {

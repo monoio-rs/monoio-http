@@ -1,6 +1,8 @@
 //! Simple HTTP Get example with low level codec.
 //! We use captive.apple.com as target service.
 
+use std::{cell::UnsafeCell, rc::Rc};
+
 use bytes::Bytes;
 use http::{request::Builder, Method, Version};
 use monoio::io::{sink::SinkExt, stream::Stream};
@@ -44,7 +46,7 @@ async fn main() {
         .expect("parse response failed");
 
     println!("Status code: {}", resp.status());
-    let body = resp.into_body().with_io(codec);
+    let body = resp.into_body().with_io(Rc::new(UnsafeCell::new(codec)));
     if body.stream_hint() != StreamHint::Fixed {
         panic!("unexpected body type");
     }

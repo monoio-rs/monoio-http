@@ -18,12 +18,7 @@ const MAX_KEEPALIVE_CONNS: usize = 16384;
 
 use bytes::Bytes;
 use monoio::io::{AsyncReadRent, AsyncWriteRent, Split};
-use monoio_http::common::{
-    body::{Body, HttpBody},
-    error::HttpError,
-    request::Request,
-    response::Response,
-};
+use monoio_http::common::{body::Body, error::HttpError, request::Request, response::Response};
 
 use super::connection::HttpConnection;
 
@@ -159,7 +154,7 @@ where
     pub async fn send_request<B: Body<Data = Bytes, Error = HttpError> + 'static>(
         mut self,
         req: Request<B>,
-    ) -> Result<Response<HttpBody>, crate::Error> {
+    ) -> Result<Response<impl Body<Data = Bytes, Error = HttpError>>, crate::Error> {
         match self.conn.as_mut() {
             Some(conn) => {
                 let (result, remove) = conn.send_request(req).await;

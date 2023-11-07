@@ -1,4 +1,7 @@
-use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
+use std::{
+    borrow::Cow, cell::UnsafeCell, future::Future, hint::unreachable_unchecked, io,
+    marker::PhantomData, rc::Rc,
+};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -628,7 +631,7 @@ where
 }
 
 impl PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder> {
-    pub fn with_io<IO>(self, next_with: IO) -> FramedPayload<IO> {
+    pub fn with_io<IO>(self, next_with: Rc<UnsafeCell<IO>>) -> FramedPayload<IO> {
         FramedPayload::new(next_with, self)
     }
 }

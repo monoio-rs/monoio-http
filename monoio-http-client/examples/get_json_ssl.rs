@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
+use monoio_http::{common::body::Body, h1::payload::Payload};
 use monoio_http_client::Client;
 
 #[monoio::main(enable_timer = true)]
 async fn main() {
-    let client = Client::default();
+    let client = Client::builder().http1_client().build();
     let resp = client
-        .get("https://httpbin.org/get")
-        .send()
+        .get("https://httpbin.org/get", Payload::None)
         .await
         .expect("request fail");
-    let json_resp: JsonResp = resp.json().await.expect("unable to parse json");
+    let (_, mut payload) = resp.into_parts();
+    let json_resp = payload.next_data().await.expect("unable to parse json");
     println!("{:?}", json_resp);
 }
 

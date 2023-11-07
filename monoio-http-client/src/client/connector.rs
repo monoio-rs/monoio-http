@@ -1,10 +1,12 @@
 use std::{
+    cell::UnsafeCell,
     fmt::{Debug, Display},
     future::Future,
     hash::Hash,
     io,
     net::ToSocketAddrs,
     path::Path,
+    rc::Rc,
 };
 
 use http::Version;
@@ -18,7 +20,7 @@ use super::{
     connection::HttpConnection,
     key::HttpVersion,
     pool::{ConnectionPool, PooledConnection},
-    ClientGlobalConfig, ConnectionConfig, Proto,
+    ConnectionConfig, Proto,
 };
 
 #[cfg(not(feature = "native-tls"))]
@@ -94,7 +96,7 @@ impl<C: Default> Default for TlsConnector<C> {
     #[cfg(not(feature = "native-tls"))]
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
             rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
                 ta.subject,
                 ta.spki,
@@ -189,16 +191,18 @@ impl HttpConnector {
         };
 
         match proto {
-            Version::HTTP_11 => Ok(HttpConnection::H1(Some(ClientCodec::new(io)))),
-            Version::HTTP_2 => {
-                let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
-                monoio::spawn(async move {
-                    if let Err(e) = h2_conn.await {
-                        println!("H2 CONN ERR={:?}", e);
-                    }
-                });
-                Ok(HttpConnection::H2(send_request))
-            }
+            Version::HTTP_11 => Ok(HttpConnection::H1(Rc::new(UnsafeCell::new(
+                ClientCodec::new(io),
+            )))),
+            // Version::HTTP_2 => {
+            //     let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
+            //     monoio::spawn(async move {
+            //         if let Err(e) = h2_conn.await {
+            //             println!("H2 CONN ERR={:?}", e);
+            //         }
+            //     });
+            //     Ok(HttpConnection::H2(send_request))
+            // }
             _ => {
                 unreachable!()
             }
@@ -210,7 +214,6 @@ impl HttpConnector {
 /// 1. pool
 /// 2. combine connection with codec(of cause with buffer)
 pub struct PooledConnector<TC, K, IO: AsyncWriteRent> {
-    global_config: ClientGlobalConfig,
     transport_connector: TC,
     http_connector: HttpConnector,
     pool: ConnectionPool<K, IO>,
@@ -219,7 +222,6 @@ pub struct PooledConnector<TC, K, IO: AsyncWriteRent> {
 impl<TC: Clone, K, IO: AsyncWriteRent> Clone for PooledConnector<TC, K, IO> {
     fn clone(&self) -> Self {
         Self {
-            global_config: self.global_config.clone(),
             transport_connector: self.transport_connector.clone(),
             http_connector: self.http_connector.clone(),
             pool: self.pool.clone(),
@@ -237,9 +239,8 @@ impl<TC, K: 'static, IO: AsyncWriteRent + 'static> PooledConnector<TC, K, IO>
 where
     TC: Default,
 {
-    pub fn new_default(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
+    pub fn new_default(c_config: ConnectionConfig) -> Self {
         Self {
-            global_config,
             transport_connector: Default::default(),
             http_connector: HttpConnector::new(c_config),
             pool: ConnectionPool::default(),
@@ -248,13 +249,8 @@ where
 }
 
 impl<TC, K: 'static, IO: AsyncWriteRent + 'static> PooledConnector<TC, K, IO> {
-    pub fn new(
-        global_config: ClientGlobalConfig,
-        c_config: ConnectionConfig,
-        connector: TC,
-    ) -> Self {
+    pub fn new(c_config: ConnectionConfig, connector: TC) -> Self {
         Self {
-            global_config,
             transport_connector: connector,
             http_connector: HttpConnector::new(c_config),
             pool: ConnectionPool::default(),
