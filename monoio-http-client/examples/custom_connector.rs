@@ -1,8 +1,3 @@
-#![feature(type_alias_impl_trait)]
-#![feature(impl_trait_in_assoc_type)]
-
-use std::future::Future;
-
 use monoio_http_client::{
     unified::{UnifiedTransportAddr, UnifiedTransportConnection, UnifiedTransportConnector},
     Client, Connector, Error, Key,
