@@ -158,34 +158,30 @@ impl<D, E> FixedInner<D, E> {
 impl<D: IoBuf, E> Stream for FixedPayload<D, E> {
     type Item = Result<D, E>;
 
-    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
-
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            loop {
-                {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.eof {
-                        return None;
-                    }
-                    if let Some(item) = inner.item.take() {
-                        inner.eof = true;
-                        return Some(item);
-                    }
+    async fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.eof {
+                    return None;
                 }
-                poll_fn(|cx| {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.item.is_some() {
-                        std::task::Poll::Ready(())
-                    } else {
-                        if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
-                            inner.task = Some(cx.waker().clone());
-                        }
-                        std::task::Poll::Pending
-                    }
-                })
-                .await;
+                if let Some(item) = inner.item.take() {
+                    inner.eof = true;
+                    return Some(item);
+                }
             }
+            poll_fn(|cx| {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.item.is_some() {
+                    std::task::Poll::Ready(())
+                } else {
+                    if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
+                        inner.task = Some(cx.waker().clone());
+                    }
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
     }
 }
@@ -254,33 +250,29 @@ impl<D, E> StreamInner<D, E> {
 impl<D: IoBuf, E> Stream for StreamPayload<D, E> {
     type Item = Result<D, E>;
 
-    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
-
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            loop {
-                {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if let Some(data) = inner.items.pop_front() {
-                        return Some(data);
-                    }
-                    if inner.eof {
-                        return None;
-                    }
+    async fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            {
+                let inner = unsafe { &mut *self.inner.get() };
+                if let Some(data) = inner.items.pop_front() {
+                    return Some(data);
                 }
-                poll_fn(|cx| {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.eof || !inner.items.is_empty() {
-                        std::task::Poll::Ready(())
-                    } else {
-                        if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
-                            inner.task = Some(cx.waker().clone());
-                        }
-                        std::task::Poll::Pending
-                    }
-                })
-                .await;
+                if inner.eof {
+                    return None;
+                }
             }
+            poll_fn(|cx| {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.eof || !inner.items.is_empty() {
+                    std::task::Poll::Ready(())
+                } else {
+                    if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
+                        inner.task = Some(cx.waker().clone());
+                    }
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
     }
 }

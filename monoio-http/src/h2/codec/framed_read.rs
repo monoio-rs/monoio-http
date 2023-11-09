@@ -1,4 +1,4 @@
-use std::{future::Future, io};
+use std::io;
 
 use bytes::BytesMut;
 use monoio::io::{stream::Stream, AsyncReadRent};
@@ -332,41 +332,37 @@ where
 {
     type Item = Result<Frame, Error>;
 
-    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
-
     // Required method
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            let span = tracing::trace_span!("FramedRead::poll_next");
-            let _e = span.enter();
-            loop {
-                tracing::trace!("poll");
+    async fn next(&mut self) -> Option<Self::Item> {
+        let span = tracing::trace_span!("FramedRead::poll_next");
+        let _e = span.enter();
+        loop {
+            tracing::trace!("poll");
 
-                // Get LengthLimitedCodec decoded byte frames from Monoio's FrameRead implementatio,
-                // and decode the HTTP frames.
-                let bytes = match self.inner.next().await {
-                    Some(Ok(bytes)) => bytes,
-                    Some(Err(e)) => return Some(Err(map_err(e))),
-                    None => return None,
-                };
+            // Get LengthLimitedCodec decoded byte frames from Monoio's FrameRead implementatio,
+            // and decode the HTTP frames.
+            let bytes = match self.inner.next().await {
+                Some(Ok(bytes)) => bytes,
+                Some(Err(e)) => return Some(Err(map_err(e))),
+                None => return None,
+            };
 
-                tracing::trace!(read.bytes = bytes.len());
-                let Self {
-                    ref mut hpack,
-                    max_header_list_size,
-                    ref mut partial,
-                    ..
-                } = *self;
+            tracing::trace!(read.bytes = bytes.len());
+            let Self {
+                ref mut hpack,
+                max_header_list_size,
+                ref mut partial,
+                ..
+            } = *self;
 
-                match decode_frame(hpack, max_header_list_size, partial, bytes) {
-                    Ok(frame) => {
-                        if let Some(frame) = frame {
-                            tracing::debug!(?frame, "received");
-                            return Some(Ok(frame));
-                        }
+            match decode_frame(hpack, max_header_list_size, partial, bytes) {
+                Ok(frame) => {
+                    if let Some(frame) = frame {
+                        tracing::debug!(?frame, "received");
+                        return Some(Ok(frame));
                     }
-                    Err(e) => return Some(Err(e)),
                 }
+                Err(e) => return Some(Err(e)),
             }
         }
     }

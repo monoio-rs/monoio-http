@@ -391,19 +391,12 @@ impl<T, B> FramedWrite<T, B> {
 }
 
 impl<T: AsyncReadRent + Unpin, B> AsyncReadRent for FramedWrite<T, B> {
-    type ReadFuture<'a, E> = impl std::future::Future<Output = monoio::BufResult<usize, E>> + 'a where
-    Self: 'a,
-    E: IoBufMut + 'a;
-    type ReadvFuture<'a, E> = impl std::future::Future<Output = monoio::BufResult<usize, E>> + 'a where
-    Self: 'a,
-    E: IoVecBufMut + 'a;
-
-    fn read<F: IoBufMut>(&mut self, buf: F) -> Self::ReadFuture<'_, F> {
-        async move { self.inner.get_mut().read(buf).await }
+    async fn read<F: IoBufMut>(&mut self, buf: F) -> BufResult<usize, F> {
+        self.inner.get_mut().read(buf).await
     }
 
-    fn readv<F: IoVecBufMut>(&mut self, buf: F) -> Self::ReadvFuture<'_, F> {
-        async move { self.inner.get_mut().readv(buf).await }
+    async fn readv<F: IoVecBufMut>(&mut self, buf: F) -> BufResult<usize, F> {
+        self.inner.get_mut().readv(buf).await
     }
 }
 

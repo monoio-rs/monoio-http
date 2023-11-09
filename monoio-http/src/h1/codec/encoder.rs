@@ -1,4 +1,4 @@
-use std::{fmt::Write, future::Future, io};
+use std::{fmt::Write, io};
 
 use bytes::{BufMut, BytesMut};
 use http::{HeaderMap, HeaderValue, StatusCode, Version};
@@ -222,6 +222,7 @@ impl<T> GenericEncoder<T> {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 enum Length {
     None,
     ContentLength(usize),
@@ -240,124 +241,109 @@ where
 {
     type Error = HttpError;
 
-    type SendFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a, R: 'a;
-
-    type FlushFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
-
-    type CloseFuture<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Self: 'a;
-
-    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
-    where
-        R: 'a,
-    {
+    async fn send(&mut self, item: R) -> Result<(), Self::Error> {
         let (mut head, mut payload) = item.into_parts();
-        async move {
-            // if there is too much content in buffer, flush it first
-            if self.buf.len() > BACKPRESSURE_BOUNDARY {
-                Sink::<R>::flush(self).await?;
-            }
-            let header_map = head.header_map_mut();
-            let payload_type = payload.stream_hint();
 
-            match payload_type {
-                StreamHint::None => {
-                    // set special header
-                    HeadEncoder::set_length_header(header_map, Length::None);
-                    // encode head to buffer
-                    HeadEncoder
-                        .encode(head, &mut self.buf)
-                        .map_err(Into::into)?;
+        // if there is too much content in buffer, flush it first
+        if self.buf.len() > BACKPRESSURE_BOUNDARY {
+            Sink::<R>::flush(self).await?;
+        }
+        let header_map = head.header_map_mut();
+        let payload_type = payload.stream_hint();
+
+        match payload_type {
+            StreamHint::None => {
+                // set special header
+                HeadEncoder::set_length_header(header_map, Length::None);
+                // encode head to buffer
+                HeadEncoder
+                    .encode(head, &mut self.buf)
+                    .map_err(Into::into)?;
+            }
+            StreamHint::Fixed => {
+                // get data(to set content length and body)
+                let data = payload
+                    .next_data()
+                    .await
+                    .expect("empty data with fixed hint")?;
+                // set special header
+                HeadEncoder::set_length_header(
+                    header_map,
+                    Length::ContentLength(data.bytes_init()),
+                );
+                // encode head to buffer
+                HeadEncoder
+                    .encode(head, &mut self.buf)
+                    .map_err(Into::into)?;
+                // flush
+                if self.buf.len() + data.bytes_init() > BACKPRESSURE_BOUNDARY {
+                    // if data to send is too long, we will flush the buffer
+                    // first, and send Bytes directly.
+                    Sink::<R>::flush(self).await?;
+                    let (r, _) = self.io.write_all(data).await;
+                    r?;
+                } else {
+                    // the data length is small, we copy it to avoid too many
+                    // syscall(head and body will be sent together).
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(data.read_ptr(), data.bytes_init()) };
+                    FixedBodyEncoder.encode(slice, &mut self.buf)?;
                 }
-                StreamHint::Fixed => {
-                    // get data(to set content length and body)
-                    let data = payload
-                        .next_data()
-                        .await
-                        .expect("empty data with fixed hint")?;
-                    // set special header
-                    HeadEncoder::set_length_header(
-                        header_map,
-                        Length::ContentLength(data.bytes_init()),
-                    );
-                    // encode head to buffer
-                    HeadEncoder
-                        .encode(head, &mut self.buf)
-                        .map_err(Into::into)?;
-                    // flush
+            }
+            StreamHint::Stream => {
+                // set special header
+                HeadEncoder::set_length_header(header_map, Length::Chunked);
+                // encode head to buffer
+                HeadEncoder
+                    .encode(head, &mut self.buf)
+                    .map_err(Into::into)?;
+
+                while let Some(data_res) = payload.next_data().await {
+                    let data = data_res?;
+                    write!(self.buf, "{:X}\r\n", data.bytes_init())
+                        .expect("unable to format data length");
                     if self.buf.len() + data.bytes_init() > BACKPRESSURE_BOUNDARY {
                         // if data to send is too long, we will flush the buffer
                         // first, and send Bytes directly.
-                        Sink::<R>::flush(self).await?;
+                        if !self.buf.is_empty() {
+                            Sink::<R>::flush(self).await?;
+                        }
                         let (r, _) = self.io.write_all(data).await;
                         r?;
                     } else {
                         // the data length is small, we copy it to avoid too many
-                        // syscall(head and body will be sent together).
+                        // syscall.
                         let slice = unsafe {
                             std::slice::from_raw_parts(data.read_ptr(), data.bytes_init())
                         };
                         FixedBodyEncoder.encode(slice, &mut self.buf)?;
                     }
+                    self.buf.put_slice(b"\r\n");
                 }
-                StreamHint::Stream => {
-                    // set special header
-                    HeadEncoder::set_length_header(header_map, Length::Chunked);
-                    // encode head to buffer
-                    HeadEncoder
-                        .encode(head, &mut self.buf)
-                        .map_err(Into::into)?;
-
-                    while let Some(data_res) = payload.next_data().await {
-                        let data = data_res?;
-                        write!(self.buf, "{:X}\r\n", data.bytes_init())
-                            .expect("unable to format data length");
-                        if self.buf.len() + data.bytes_init() > BACKPRESSURE_BOUNDARY {
-                            // if data to send is too long, we will flush the buffer
-                            // first, and send Bytes directly.
-                            if !self.buf.is_empty() {
-                                Sink::<R>::flush(self).await?;
-                            }
-                            let (r, _) = self.io.write_all(data).await;
-                            r?;
-                        } else {
-                            // the data length is small, we copy it to avoid too many
-                            // syscall.
-                            let slice = unsafe {
-                                std::slice::from_raw_parts(data.read_ptr(), data.bytes_init())
-                            };
-                            FixedBodyEncoder.encode(slice, &mut self.buf)?;
-                        }
-                        self.buf.put_slice(b"\r\n");
-                    }
-                    self.buf.put_slice(b"0\r\n\r\n");
-                }
+                self.buf.put_slice(b"0\r\n\r\n");
             }
-            Ok(())
         }
+        Ok(())
     }
 
-    fn flush(&mut self) -> Self::FlushFuture<'_> {
-        async move {
-            if self.buf.is_empty() {
-                return Ok(());
-            }
-            // This action does not allocate.
-            let buf = std::mem::replace(&mut self.buf, BytesMut::new());
-            let (result, buf) = self.io.write_all(buf).await;
-            self.buf = buf;
-            result?;
-            self.buf.clear();
-            self.io.flush().await?;
-            Ok(())
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        if self.buf.is_empty() {
+            return Ok(());
         }
+        // This action does not allocate.
+        let buf = std::mem::replace(&mut self.buf, BytesMut::new());
+        let (result, buf) = self.io.write_all(buf).await;
+        self.buf = buf;
+        result?;
+        self.buf.clear();
+        self.io.flush().await?;
+        Ok(())
     }
 
     // copied from monoio-codec
-    fn close(&mut self) -> Self::CloseFuture<'_> {
-        async move {
-            Sink::<R>::flush(self).await?;
-            self.io.shutdown().await?;
-            Ok(())
-        }
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Sink::<R>::flush(self).await?;
+        self.io.shutdown().await?;
+        Ok(())
     }
 }

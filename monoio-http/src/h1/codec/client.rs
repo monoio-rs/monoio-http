@@ -41,34 +41,19 @@ where
 {
     type Error = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::Error;
 
-    type SendFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::SendFuture<'a>
-    where
-        Self: 'a, R: 'a;
-
-    type FlushFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::FlushFuture<'a>
-    where
-        Self: 'a;
-
-    type CloseFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::CloseFuture<'a>
-    where
-        Self: 'a;
-
     #[inline]
-    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
-    where
-        R: 'a,
-    {
-        self.encoder.send(item)
+    async fn send(&mut self, item: R) -> Result<(), Self::Error> {
+        self.encoder.send(item).await
     }
 
     #[inline]
-    fn flush(&mut self) -> Self::FlushFuture<'_> {
-        self.encoder.flush()
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.encoder.flush().await
     }
 
     #[inline]
-    fn close(&mut self) -> Self::CloseFuture<'_> {
-        self.encoder.close()
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.encoder.close().await
     }
 }
 
@@ -78,12 +63,8 @@ where
 {
     type Item = <ClientResponseDecoder<OwnedReadHalf<IO>> as Stream>::Item;
 
-    type NextFuture<'a> = <ClientResponseDecoder<OwnedReadHalf<IO>> as Stream>::NextFuture<'a>
-    where
-        Self: 'a;
-
     #[inline]
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        self.decoder.next()
+    async fn next(&mut self) -> Option<Self::Item> {
+        self.decoder.next().await
     }
 }

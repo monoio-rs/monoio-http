@@ -1,3 +1,11 @@
 [workspace]
 members = ["monoio-http", "monoio-http-client"]
 resolver = "2"
+
+[workspace.dependencies]
+monoio = { version = "0.2.0" }
+monoio-compat = { version = "0.2.0" }
+service-async = { path = "../service-async/service-async" }
+monoio-rustls = { path = "../monoio-tls/monoio-rustls" }
+monoio-native-tls = { path = "../monoio-tls/monoio-native-tls" }
+monoio-codec = { path = "../monoio-codec" }

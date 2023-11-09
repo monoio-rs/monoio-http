@@ -60,7 +60,7 @@ pub use self::{
     reset::Reset,
     settings::{
         Settings, DEFAULT_INITIAL_WINDOW_SIZE, DEFAULT_MAX_FRAME_SIZE,
-        DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_INITIAL_WINDOW_SIZE, MAX_MAX_FRAME_SIZE,
+        DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
     },
     stream_id::{StreamId, StreamIdOverflow},
     window_update::WindowUpdate,

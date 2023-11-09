@@ -121,99 +121,59 @@ where
 }
 
 impl AsyncReadRent for UnifiedTransportConnection {
-    type ReadFuture<'a, T> = impl Future<Output = BufResult<usize, T>> + 'a
-    where
-        Self: 'a,
-        T: IoBufMut + 'a;
-
-    type ReadvFuture<'a, T> = impl Future<Output = BufResult<usize, T>> + 'a
-    where
-        Self: 'a,
-        T: IoVecBufMut + 'a;
-
-    fn read<T: IoBufMut>(&mut self, buf: T) -> Self::ReadFuture<'_, T> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.read(buf).await,
-                UnifiedTransportConnection::Unix(s) => s.read(buf).await,
-                UnifiedTransportConnection::TcpTls(s) => s.read(buf).await,
-                UnifiedTransportConnection::UnixTls(s) => s.read(buf).await,
-            }
+    async fn read<T: IoBufMut>(&mut self, buf: T) -> BufResult<usize, T> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.read(buf).await,
+            UnifiedTransportConnection::Unix(s) => s.read(buf).await,
+            UnifiedTransportConnection::TcpTls(s) => s.read(buf).await,
+            UnifiedTransportConnection::UnixTls(s) => s.read(buf).await,
         }
     }
 
-    fn readv<T: IoVecBufMut>(&mut self, buf: T) -> Self::ReadvFuture<'_, T> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.readv(buf).await,
-                UnifiedTransportConnection::Unix(s) => s.readv(buf).await,
-                UnifiedTransportConnection::TcpTls(s) => s.readv(buf).await,
-                UnifiedTransportConnection::UnixTls(s) => s.readv(buf).await,
-            }
+    async fn readv<T: IoVecBufMut>(&mut self, buf: T) -> BufResult<usize, T> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.readv(buf).await,
+            UnifiedTransportConnection::Unix(s) => s.readv(buf).await,
+            UnifiedTransportConnection::TcpTls(s) => s.readv(buf).await,
+            UnifiedTransportConnection::UnixTls(s) => s.readv(buf).await,
         }
     }
 }
 
 impl AsyncWriteRent for UnifiedTransportConnection {
-    type WriteFuture<'a, T> = impl Future<Output = BufResult<usize, T>> + 'a
-    where
-        Self: 'a,
-        T: IoBuf + 'a;
-
-    type WritevFuture<'a, T> = impl Future<Output = BufResult<usize, T>> + 'a
-    where
-        Self: 'a,
-        T: IoVecBuf + 'a;
-
-    type FlushFuture<'a> = impl Future<Output = io::Result<()>> + 'a
-    where
-        Self: 'a;
-
-    type ShutdownFuture<'a> = impl Future<Output = io::Result<()>> + 'a
-    where
-        Self: 'a;
-
-    fn write<T: IoBuf>(&mut self, buf: T) -> Self::WriteFuture<'_, T> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.write(buf).await,
-                UnifiedTransportConnection::Unix(s) => s.write(buf).await,
-                UnifiedTransportConnection::TcpTls(s) => s.write(buf).await,
-                UnifiedTransportConnection::UnixTls(s) => s.write(buf).await,
-            }
+    async fn write<T: IoBuf>(&mut self, buf: T) -> BufResult<usize, T> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.write(buf).await,
+            UnifiedTransportConnection::Unix(s) => s.write(buf).await,
+            UnifiedTransportConnection::TcpTls(s) => s.write(buf).await,
+            UnifiedTransportConnection::UnixTls(s) => s.write(buf).await,
         }
     }
 
-    fn writev<T: IoVecBuf>(&mut self, buf: T) -> Self::WritevFuture<'_, T> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.writev(buf).await,
-                UnifiedTransportConnection::Unix(s) => s.writev(buf).await,
-                UnifiedTransportConnection::TcpTls(s) => s.writev(buf).await,
-                UnifiedTransportConnection::UnixTls(s) => s.writev(buf).await,
-            }
+    async fn writev<T: IoVecBuf>(&mut self, buf: T) -> BufResult<usize, T> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.writev(buf).await,
+            UnifiedTransportConnection::Unix(s) => s.writev(buf).await,
+            UnifiedTransportConnection::TcpTls(s) => s.writev(buf).await,
+            UnifiedTransportConnection::UnixTls(s) => s.writev(buf).await,
         }
     }
 
-    fn flush(&mut self) -> Self::FlushFuture<'_> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.flush().await,
-                UnifiedTransportConnection::Unix(s) => s.flush().await,
-                UnifiedTransportConnection::TcpTls(s) => s.flush().await,
-                UnifiedTransportConnection::UnixTls(s) => s.flush().await,
-            }
+    async fn flush(&mut self) -> io::Result<()> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.flush().await,
+            UnifiedTransportConnection::Unix(s) => s.flush().await,
+            UnifiedTransportConnection::TcpTls(s) => s.flush().await,
+            UnifiedTransportConnection::UnixTls(s) => s.flush().await,
         }
     }
 
-    fn shutdown(&mut self) -> Self::ShutdownFuture<'_> {
-        async move {
-            match self {
-                UnifiedTransportConnection::Tcp(s) => s.shutdown().await,
-                UnifiedTransportConnection::Unix(s) => s.shutdown().await,
-                UnifiedTransportConnection::TcpTls(s) => s.shutdown().await,
-                UnifiedTransportConnection::UnixTls(s) => s.shutdown().await,
-            }
+    async fn shutdown(&mut self) -> io::Result<()> {
+        match self {
+            UnifiedTransportConnection::Tcp(s) => s.shutdown().await,
+            UnifiedTransportConnection::Unix(s) => s.shutdown().await,
+            UnifiedTransportConnection::TcpTls(s) => s.shutdown().await,
+            UnifiedTransportConnection::UnixTls(s) => s.shutdown().await,
         }
     }
 }
