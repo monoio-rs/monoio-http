@@ -47,17 +47,11 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
     type Data = D;
     type Error = E;
 
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<D, E>>> + 'a
-    where
-        Self: 'a;
-
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move {
-            match self {
-                Payload::None => None,
-                Payload::Fixed(p) => p.next().await,
-                Payload::Stream(p) => p.next().await,
-            }
+    async fn next_data(&mut self) -> Option<Result<D, E>> {
+        match self {
+            Payload::None => None,
+            Payload::Fixed(p) => p.next().await,
+            Payload::Stream(p) => p.next().await,
         }
     }
 
@@ -306,12 +300,9 @@ pub struct FramedPayloadRecvr {
 impl Body for FramedPayloadRecvr {
     type Data = Bytes;
     type Error = HttpError;
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
-    where
-        Self: 'a;
 
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move { self.data_rx.recv().await? }
+    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
+        self.data_rx.recv().await?
     }
 
     fn stream_hint(&self) -> StreamHint {
@@ -353,36 +344,31 @@ where
 {
     type Data = Bytes;
     type Error = HttpError;
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
-    where
-        Self: 'a;
 
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move {
-            if self.eof {
-                return None;
-            }
-            // The logic here is alike with GenericDecoder's Fillpayload
-            match &mut self.payload_decoder {
-                PayloadDecoder::None => None,
-                PayloadDecoder::Fixed(decoder) => {
-                    self.eof = true;
-                    match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof.into())),
-                        Some(Ok(item)) => Some(Ok(item)),
-                        Some(Err(e)) => Some(Err(e.into())),
-                    }
+    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
+        if self.eof {
+            return None;
+        }
+        // The logic here is alike with GenericDecoder's Fillpayload
+        match &mut self.payload_decoder {
+            PayloadDecoder::None => None,
+            PayloadDecoder::Fixed(decoder) => {
+                self.eof = true;
+                match self.io_source.framed_mut().next_with(decoder).await {
+                    None => Some(Err(DecodeError::UnexpectedEof.into())),
+                    Some(Ok(item)) => Some(Ok(item)),
+                    Some(Err(e)) => Some(Err(e.into())),
                 }
-                PayloadDecoder::Streamed(decoder) => {
-                    match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof.into())),
-                        Some(Ok(Some(item))) => Some(Ok(item)),
-                        Some(Ok(None)) => {
-                            self.eof = true;
-                            None
-                        }
-                        Some(Err(e)) => Some(Err(e.into())),
+            }
+            PayloadDecoder::Streamed(decoder) => {
+                match self.io_source.framed_mut().next_with(decoder).await {
+                    None => Some(Err(DecodeError::UnexpectedEof.into())),
+                    Some(Ok(Some(item))) => Some(Ok(item)),
+                    Some(Ok(None)) => {
+                        self.eof = true;
+                        None
                     }
+                    Some(Err(e)) => Some(Err(e.into())),
                 }
             }
         }

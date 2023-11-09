@@ -43,15 +43,11 @@ impl Connector<Key> for CloudflareConnector {
     type Connection = UnifiedTransportConnection;
     type Error = Error;
 
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a;
+    async fn connect(&self, mut key: Key) -> Result<Self::Connection, Self::Error> {
+        key.host = "1.1.1.1".into();
+        key.port = 443;
 
-    fn connect(&self, mut key: Key) -> Self::ConnectionFuture<'_> {
-        async move {
-            key.host = "1.1.1.1".into();
-            key.port = 443;
-
-            self.inner.connect(key).await
-        }
+        self.inner.connect(key).await
     }
 }
 
@@ -65,21 +61,15 @@ impl Connector<Key> for CustomUnixConnector {
     type Connection = UnifiedTransportConnection;
     type Error = Error;
 
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a;
+    async fn connect(&self, key: Key) -> Result<Self::Connection, Self::Error> {
+        let modified = "/tmp/proxy.sock".into();
+        let addr = match key.param() {
+            UnifiedTransportAddr::Tcp(_, _) => UnifiedTransportAddr::Unix(modified),
+            UnifiedTransportAddr::Unix(_) => UnifiedTransportAddr::Unix(modified),
+            UnifiedTransportAddr::TcpTls(_, _, sn) => UnifiedTransportAddr::UnixTls(modified, sn),
+            UnifiedTransportAddr::UnixTls(_, sn) => UnifiedTransportAddr::UnixTls(modified, sn),
+        };
 
-    fn connect(&self, key: Key) -> Self::ConnectionFuture<'_> {
-        async move {
-            let modified = "/tmp/proxy.sock".into();
-            let addr = match key.param() {
-                UnifiedTransportAddr::Tcp(_, _) => UnifiedTransportAddr::Unix(modified),
-                UnifiedTransportAddr::Unix(_) => UnifiedTransportAddr::Unix(modified),
-                UnifiedTransportAddr::TcpTls(_, _, sn) => {
-                    UnifiedTransportAddr::UnixTls(modified, sn)
-                }
-                UnifiedTransportAddr::UnixTls(_, sn) => UnifiedTransportAddr::UnixTls(modified, sn),
-            };
-
-            self.inner.connect(addr).await
-        }
+        self.inner.connect(addr).await
     }
 }

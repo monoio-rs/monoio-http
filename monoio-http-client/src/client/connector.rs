@@ -30,11 +30,8 @@ pub type TlsStream<C> = monoio_native_tls::TlsStream<C>;
 pub trait Connector<K> {
     type Connection;
     type Error;
-    type ConnectionFuture<'a>: Future<Output = Result<Self::Connection, Self::Error>>
-    where
-        Self: 'a,
-        K: 'a;
-    fn connect(&self, key: K) -> Self::ConnectionFuture<'_>;
+
+    fn connect(&self, key: K) -> impl Future<Output = Result<Self::Connection, Self::Error>>;
 }
 
 #[derive(Default, Clone, Debug)]
@@ -46,16 +43,13 @@ where
 {
     type Connection = TcpStream;
     type Error = io::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
 
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
-        async move {
-            TcpStream::connect(key).await.map(|io| {
-                // we will ignore the set nodelay error
-                let _ = io.set_nodelay(true);
-                io
-            })
-        }
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
+        TcpStream::connect(key).await.map(|io| {
+            // we will ignore the set nodelay error
+            let _ = io.set_nodelay(true);
+            io
+        })
     }
 }
 
@@ -68,10 +62,9 @@ where
 {
     type Connection = UnixStream;
     type Error = io::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where P: 'a;
 
-    fn connect(&self, key: P) -> Self::ConnectionFuture<'_> {
-        UnixStream::connect(key)
+    async fn connect(&self, key: P) -> Result<Self::Connection, Self::Error> {
+        UnixStream::connect(key).await
     }
 }
 
@@ -131,15 +124,13 @@ where
 {
     type Connection = TlsStream<C::Connection>;
     type Error = monoio_rustls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a, T: 'a;
 
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
         let server_name = key.param();
-        async move {
-            let stream = self.inner_connector.connect(key).await?;
-            let tls_stream = self.tls_connector.connect(server_name, stream).await?;
-            Ok(tls_stream)
-        }
+
+        let stream = self.inner_connector.connect(key).await?;
+        let tls_stream = self.tls_connector.connect(server_name, stream).await?;
+        Ok(tls_stream)
     }
 }
 
@@ -271,21 +262,18 @@ where
 {
     type Connection = PooledConnection<K, IO>;
     type Error = crate::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a;
 
-    fn connect(&self, key: K) -> Self::ConnectionFuture<'_> {
-        async move {
-            if let Some(conn) = self.pool.get(&key) {
-                return Ok(conn);
-            }
-            let key_owned = key.to_owned();
-            let io = self.transport_connector.connect(key).await?;
-
-            let pipe = self
-                .http_connector
-                .connect(io, key_owned.get_version())
-                .await?;
-            Ok(self.pool.link(key_owned, pipe))
+    async fn connect(&self, key: K) -> Result<Self::Connection, Self::Error> {
+        if let Some(conn) = self.pool.get(&key) {
+            return Ok(conn);
         }
+        let key_owned = key.to_owned();
+        let io = self.transport_connector.connect(key).await?;
+
+        let pipe = self
+            .http_connector
+            .connect(io, key_owned.get_version())
+            .await?;
+        Ok(self.pool.link(key_owned, pipe))
     }
 }

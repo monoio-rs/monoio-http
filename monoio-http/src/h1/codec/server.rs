@@ -49,12 +49,8 @@ where
 {
     type Error = <RequestDecoder<OwnedReadHalf<IO>> as FillPayload>::Error;
 
-    type FillPayloadFuture<'a> = <RequestDecoder<OwnedReadHalf<IO>> as FillPayload>::FillPayloadFuture<'a>
-    where
-        Self: 'a;
-
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_> {
-        self.decoder.fill_payload()
+    async fn fill_payload(&mut self) -> Result<(), Self::Error> {
+        self.decoder.fill_payload().await
     }
 }
 

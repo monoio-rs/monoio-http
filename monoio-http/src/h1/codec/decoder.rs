@@ -1,4 +1,4 @@
-use std::{borrow::Cow, hint::unreachable_unchecked, io, marker::PhantomData};
+use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -467,11 +467,8 @@ where
 
 pub trait FillPayload {
     type Error;
-    type FillPayloadFuture<'a>: std::future::Future<Output = Result<(), Self::Error>>
-    where
-        Self: 'a;
 
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_>;
+    fn fill_payload(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
 impl<IO, HD, I> FillPayload for GenericDecoder<IO, HD>
@@ -484,65 +481,59 @@ where
 {
     type Error = HttpError;
 
-    type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_> {
-        async move {
-            loop {
-                match &mut self.next_decoder {
-                    // If there is no next_decoder, use main decoder
-                    NextDecoder::None => {
-                        return Ok(());
-                    }
-                    NextDecoder::Fixed(_, _) => {
-                        // Swap sender out
-                        let (mut decoder, sender) =
-                            match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
-                                NextDecoder::None => unsafe { unreachable_unchecked() },
-                                NextDecoder::Fixed(decoder, sender) => (decoder, sender),
-                                NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
-                            };
-                        match self.framed.next_with(&mut decoder).await {
-                            // EOF
-                            None => {
-                                sender.feed(Err((PayloadError::UnexpectedEof).into()));
-                                return Err(DecodeError::UnexpectedEof.into());
-                            }
-                            Some(Ok(item)) => {
-                                sender.feed(Ok(item));
-                            }
-                            Some(Err(e)) => {
-                                sender.feed(Err(PayloadError::Decode.into()));
-                                return Err(e.into());
-                            }
+    async fn fill_payload(&mut self) -> Result<(), Self::Error> {
+        loop {
+            match &mut self.next_decoder {
+                // If there is no next_decoder, use main decoder
+                NextDecoder::None => {
+                    return Ok(());
+                }
+                NextDecoder::Fixed(_, _) => {
+                    // Swap sender out
+                    let (mut decoder, sender) =
+                        match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
+                            NextDecoder::None => unsafe { unreachable_unchecked() },
+                            NextDecoder::Fixed(decoder, sender) => (decoder, sender),
+                            NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
+                        };
+                    match self.framed.next_with(&mut decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed(Err((PayloadError::UnexpectedEof).into()));
+                            return Err(DecodeError::UnexpectedEof.into());
+                        }
+                        Some(Ok(item)) => {
+                            sender.feed(Ok(item));
+                        }
+                        Some(Err(e)) => {
+                            sender.feed(Err(PayloadError::Decode.into()));
+                            return Err(e.into());
                         }
                     }
-                    NextDecoder::Streamed(decoder, sender) => {
-                        match self.framed.next_with(decoder).await {
-                            // EOF
-                            None => {
-                                sender.feed_error(PayloadError::UnexpectedEof.into());
-                                return Err(DecodeError::UnexpectedEof.into());
-                            }
-                            Some(Ok(item)) => {
-                                // Send data
-                                match item {
-                                    Some(item) => {
-                                        sender.feed_data(Some(item));
-                                    }
-                                    None => {
-                                        sender.feed_data(None);
-                                        self.next_decoder = NextDecoder::None;
-                                    }
+                }
+                NextDecoder::Streamed(decoder, sender) => {
+                    match self.framed.next_with(decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed_error(PayloadError::UnexpectedEof.into());
+                            return Err(DecodeError::UnexpectedEof.into());
+                        }
+                        Some(Ok(item)) => {
+                            // Send data
+                            match item {
+                                Some(item) => {
+                                    sender.feed_data(Some(item));
+                                }
+                                None => {
+                                    sender.feed_data(None);
+                                    self.next_decoder = NextDecoder::None;
                                 }
                             }
-                            Some(Err(e)) => {
-                                // Send error
-                                sender.feed_error(PayloadError::Decode.into());
-                                return Err(e.into());
-                            }
+                        }
+                        Some(Err(e)) => {
+                            // Send error
+                            sender.feed_error(PayloadError::Decode.into());
+                            return Err(e.into());
                         }
                     }
                 }

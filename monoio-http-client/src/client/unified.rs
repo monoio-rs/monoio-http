@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     io,
     net::ToSocketAddrs,
     path::{Path, PathBuf},
@@ -85,37 +84,33 @@ where
     type Connection = UnifiedTransportConnection;
     type Error = crate::Error;
 
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
-
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
-        async move {
-            let unified_addr = key.param();
-            match &unified_addr {
-                UnifiedTransportAddr::Tcp(addr, port) => self
-                    .raw_tcp
-                    .connect((addr.as_str(), *port))
-                    .await
-                    .map_err(Into::into)
-                    .map(UnifiedTransportConnection::Tcp),
-                UnifiedTransportAddr::Unix(path) => self
-                    .raw_unix
-                    .connect(path)
-                    .await
-                    .map_err(Into::into)
-                    .map(UnifiedTransportConnection::Unix),
-                UnifiedTransportAddr::TcpTls(addr, port, tls) => self
-                    .tcp_tls
-                    .connect(TcpTlsAddr(addr, *port, tls))
-                    .await
-                    .map_err(Into::into)
-                    .map(UnifiedTransportConnection::TcpTls),
-                UnifiedTransportAddr::UnixTls(path, tls) => self
-                    .unix_tls
-                    .connect(UnixTlsAddr(path, tls))
-                    .await
-                    .map_err(Into::into)
-                    .map(UnifiedTransportConnection::UnixTls),
-            }
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
+        let unified_addr = key.param();
+        match &unified_addr {
+            UnifiedTransportAddr::Tcp(addr, port) => self
+                .raw_tcp
+                .connect((addr.as_str(), *port))
+                .await
+                .map_err(Into::into)
+                .map(UnifiedTransportConnection::Tcp),
+            UnifiedTransportAddr::Unix(path) => self
+                .raw_unix
+                .connect(path)
+                .await
+                .map_err(Into::into)
+                .map(UnifiedTransportConnection::Unix),
+            UnifiedTransportAddr::TcpTls(addr, port, tls) => self
+                .tcp_tls
+                .connect(TcpTlsAddr(addr, *port, tls))
+                .await
+                .map_err(Into::into)
+                .map(UnifiedTransportConnection::TcpTls),
+            UnifiedTransportAddr::UnixTls(path, tls) => self
+                .unix_tls
+                .connect(UnixTlsAddr(path, tls))
+                .await
+                .map_err(Into::into)
+                .map(UnifiedTransportConnection::UnixTls),
         }
     }
 }
