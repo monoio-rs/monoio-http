@@ -18,17 +18,17 @@ monoio-rustls = { workspace = true }
 monoio-native-tls = { workspace = true, optional = true }
 service-async = { workspace = true }
 monoio-codec = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+local-sync = { workspace = true }
+thiserror = { workspace = true }
 
-
-bytes = "1"
-http = "0.2"
 httparse = "1"
 memchr = "2.5"
-thiserror = "1"
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-local-sync = "0.1"
 flate2 = "1"
 brotli = "3.3"
+
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 # H2 crate dependencies
 futures-core = { version = "0.3", default-features = false }

@@ -15,22 +15,24 @@ monoio = { workspace = true }
 monoio-rustls = { workspace = true }
 monoio-native-tls = { workspace = true, optional = true }
 service-async = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+local-sync = { workspace = true }
 
 monoio-http = { version = "0.3.0", path = "../monoio-http" }
 
-bytes = "1"
-http = "0.2"
-local-sync = "0.1"
 serde = "1"
 serde_json = "1"
 smol_str = "0.2"
-thiserror = "1"
+
 rustls = { version = "0", default-features = false, features = [
     "dangerous_configuration",
 ] }
-tracing = { version = "0.1", optional = true }
 webpki-roots = "0.25.2"
 native-tls = { version = "0.2", optional = true }
+
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

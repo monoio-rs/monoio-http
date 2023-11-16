@@ -3,9 +3,13 @@ members = ["monoio-http", "monoio-http-client"]
 resolver = "2"
 
 [workspace.dependencies]
-monoio = { version = "0.2.0" }
-monoio-compat = { version = "0.2.0" }
-service-async = { path = "../service-async/service-async" }
-monoio-rustls = { path = "../monoio-tls/monoio-rustls" }
-monoio-native-tls = { path = "../monoio-tls/monoio-native-tls" }
-monoio-codec = { path = "../monoio-codec" }
+monoio = "0.2.0"
+monoio-compat = "0.2.0"
+service-async = "0.2.0"
+monoio-rustls = "0.3.0"
+monoio-native-tls = "0.3.0"
+monoio-codec = "0.3.0"
+bytes = "1"
+http = "1.0"
+local-sync = "0.1"
+thiserror = "1"
