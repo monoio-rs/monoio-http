@@ -292,37 +292,19 @@ impl<D, E> StreamPayloadSender<D, E> {
     }
 }
 
-pub struct FramedPayloadRecvr {
-    pub data_rx: local_sync::mpsc::unbounded::Rx<Option<Result<Bytes, HttpError>>>,
-    pub hint: StreamHint,
-}
-
-impl Body for FramedPayloadRecvr {
-    type Data = Bytes;
-    type Error = HttpError;
-
-    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
-        self.data_rx.recv().await?
-    }
-
-    fn stream_hint(&self) -> StreamHint {
-        self.hint
-    }
-}
-
 /// Payload with io and codec, mainly used by client.
 pub struct FramedPayload<T> {
     // The io provider.
     // Normally ClientCodec. Since we may want to reuse it later,
     // so we may require it to provide something we can do read.
-    io_source: T,
+    io_source: Rc<UnsafeCell<T>>,
     payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     eof: bool,
 }
 
 impl<T> FramedPayload<T> {
     pub fn new(
-        io_source: T,
+        io_source: Rc<UnsafeCell<T>>,
         payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     ) -> Self {
         Self {
@@ -330,10 +312,6 @@ impl<T> FramedPayload<T> {
             payload_decoder,
             eof: false,
         }
-    }
-
-    pub fn get_source(self) -> T {
-        self.io_source
     }
 }
 
@@ -353,15 +331,17 @@ where
         match &mut self.payload_decoder {
             PayloadDecoder::None => None,
             PayloadDecoder::Fixed(decoder) => {
+                let io_source = unsafe { &mut *self.io_source.get() };
                 self.eof = true;
-                match self.io_source.framed_mut().next_with(decoder).await {
+                match io_source.framed_mut().next_with(decoder).await {
                     None => Some(Err(DecodeError::UnexpectedEof.into())),
                     Some(Ok(item)) => Some(Ok(item)),
                     Some(Err(e)) => Some(Err(e.into())),
                 }
             }
             PayloadDecoder::Streamed(decoder) => {
-                match self.io_source.framed_mut().next_with(decoder).await {
+                let io_source = unsafe { &mut *self.io_source.get() };
+                match io_source.framed_mut().next_with(decoder).await {
                     None => Some(Err(DecodeError::UnexpectedEof.into())),
                     Some(Ok(Some(item))) => Some(Ok(item)),
                     Some(Ok(None)) => {

@@ -11,11 +11,7 @@ use monoio::buf::IoBuf;
 use smallvec::SmallVec;
 
 use super::error::HttpError;
-use crate::{
-    common::request::Request,
-    h1::payload::{FramedPayloadRecvr, Payload},
-    h2::RecvStream,
-};
+use crate::{common::request::Request, h1::payload::Payload, h2::RecvStream};
 
 const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "br", "deflate"];
 
@@ -170,20 +166,13 @@ where
 
 pub enum HttpBody {
     Ready(Option<Bytes>),
-    H1Server(Payload),
-    H1Client(FramedPayloadRecvr),
+    H1(Payload),
     H2(RecvStream),
 }
 
 impl From<Payload> for HttpBody {
     fn from(p: Payload) -> Self {
-        Self::H1Server(p)
-    }
-}
-
-impl From<FramedPayloadRecvr> for HttpBody {
-    fn from(p: FramedPayloadRecvr) -> Self {
-        Self::H1Client(p)
+        Self::H1(p)
     }
 }
 
@@ -228,8 +217,7 @@ impl Body for HttpBody {
     async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
         match self {
             Self::Ready(b) => b.take().map(Result::Ok),
-            Self::H1Client(ref mut p) => p.next_data().await,
-            Self::H1Server(ref mut p) => p.next_data().await,
+            Self::H1(ref mut p) => p.next_data().await,
             Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
         }
     }
@@ -238,8 +226,7 @@ impl Body for HttpBody {
         match self {
             Self::Ready(Some(_)) => StreamHint::Fixed,
             Self::Ready(None) => StreamHint::None,
-            Self::H1Client(ref p) => p.stream_hint(),
-            Self::H1Server(ref p) => p.stream_hint(),
+            Self::H1(ref p) => p.stream_hint(),
             Self::H2(ref p) => p.stream_hint(),
         }
     }
