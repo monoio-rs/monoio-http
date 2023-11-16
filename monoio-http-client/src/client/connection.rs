@@ -147,7 +147,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                             PayloadDecoder::None => {
                                 let payload = Payload::None;
                                 let response = Response::from_parts(parts, payload.into());
-                                return (Ok(response), false);
+                                (Ok(response), false)
                             }
                             PayloadDecoder::Fixed(_) => {
                                 let mut framed_payload = payload_decoder.with_io(handle.clone());
@@ -157,7 +157,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                                 }
                                 let payload = Payload::Fixed(payload);
                                 let response = Response::from_parts(parts, payload.into());
-                                return (Ok(response), false);
+                                (Ok(response), false)
                             }
                             PayloadDecoder::Streamed(_) => {
                                 let mut framed_payload = payload_decoder.with_io(handle.clone());
@@ -181,7 +181,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                                 }
                                 let payload = Payload::Stream(payload);
                                 let response = Response::from_parts(parts, payload.into());
-                                return (Ok(response), false);
+                                (Ok(response), false)
                             }
                         }
                     }
