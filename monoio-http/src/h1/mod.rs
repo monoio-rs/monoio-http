@@ -8,3 +8,12 @@ pub trait BorrowFramedRead {
     type Codec;
     fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec>;
 }
+
+impl<S: ?Sized + BorrowFramedRead> BorrowFramedRead for &mut S {
+    type IO = S::IO;
+    type Codec = S::Codec;
+
+    fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec> {
+        (**self).framed_mut()
+    }
+}

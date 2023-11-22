@@ -1,12 +1,10 @@
 use std::{
-    cell::UnsafeCell,
     fmt::{Debug, Display},
     future::Future,
     hash::Hash,
     io,
     net::ToSocketAddrs,
     path::Path,
-    rc::Rc,
 };
 
 use http::Version;
@@ -182,9 +180,7 @@ impl HttpConnector {
         };
 
         match proto {
-            Version::HTTP_11 => Ok(HttpConnection::H1(Rc::new(UnsafeCell::new(
-                ClientCodec::new(io),
-            )))),
+            Version::HTTP_11 => Ok(HttpConnection::H1(ClientCodec::new(io))),
             Version::HTTP_2 => {
                 let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {

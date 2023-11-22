@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, future::poll_fn, rc::Rc, task::Poll};
+use std::{future::poll_fn, task::Poll};
 
 use bytes::Bytes;
 use monoio::io::{sink::SinkExt, stream::Stream, AsyncReadRent, AsyncWriteRent, Split};
@@ -118,7 +118,7 @@ impl<B: Body<Data = Bytes>> StreamBodyTask<B> {
 }
 
 pub enum HttpConnection<IO: AsyncWriteRent> {
-    H1(Rc<UnsafeCell<ClientCodec<IO>>>),
+    H1(ClientCodec<IO>),
     H2(SendRequest<Bytes>),
 }
 
@@ -132,15 +132,13 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
     {
         match self {
             Self::H1(handle) => {
-                let h = unsafe { &mut *handle.get() };
-
-                if let Err(e) = h.send_and_flush(request).await {
+                if let Err(e) = handle.send_and_flush(request).await {
                     #[cfg(feature = "logging")]
                     tracing::error!("send upstream request error {:?}", e);
                     return (Err(e.into()), false);
                 }
 
-                match h.next().await {
+                match handle.next().await {
                     Some(Ok(resp)) => {
                         let (parts, payload_decoder) = resp.into_parts();
                         match payload_decoder {
@@ -150,7 +148,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                                 (Ok(response), false)
                             }
                             PayloadDecoder::Fixed(_) => {
-                                let mut framed_payload = payload_decoder.with_io(handle.clone());
+                                let mut framed_payload = payload_decoder.with_io(handle);
                                 let (payload, payload_sender) = fixed_payload_pair();
                                 if let Some(data) = framed_payload.next_data().await {
                                     payload_sender.feed(data)
@@ -160,7 +158,7 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
                                 (Ok(response), false)
                             }
                             PayloadDecoder::Streamed(_) => {
-                                let mut framed_payload = payload_decoder.with_io(handle.clone());
+                                let mut framed_payload = payload_decoder.with_io(handle);
                                 let (payload, mut payload_sender) = stream_payload_pair();
                                 loop {
                                     match framed_payload.next_data().await {
