@@ -1,10 +1,12 @@
 use std::{
+    cell::UnsafeCell,
     fmt::{Debug, Display},
     future::Future,
     hash::Hash,
     io,
     net::ToSocketAddrs,
     path::Path,
+    rc::Rc,
 };
 
 use http::Version;
@@ -30,11 +32,8 @@ pub type TlsStream<C> = monoio_native_tls::TlsStream<C>;
 pub trait Connector<K> {
     type Connection;
     type Error;
-    type ConnectionFuture<'a>: Future<Output = Result<Self::Connection, Self::Error>>
-    where
-        Self: 'a,
-        K: 'a;
-    fn connect(&self, key: K) -> Self::ConnectionFuture<'_>;
+
+    fn connect(&self, key: K) -> impl Future<Output = Result<Self::Connection, Self::Error>>;
 }
 
 #[derive(Default, Clone, Debug)]
@@ -46,16 +45,13 @@ where
 {
     type Connection = TcpStream;
     type Error = io::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where T: 'a;
 
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
-        async move {
-            TcpStream::connect(key).await.map(|io| {
-                // we will ignore the set nodelay error
-                let _ = io.set_nodelay(true);
-                io
-            })
-        }
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
+        TcpStream::connect(key).await.map(|io| {
+            // we will ignore the set nodelay error
+            let _ = io.set_nodelay(true);
+            io
+        })
     }
 }
 
@@ -68,10 +64,9 @@ where
 {
     type Connection = UnixStream;
     type Error = io::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where P: 'a;
 
-    fn connect(&self, key: P) -> Self::ConnectionFuture<'_> {
-        UnixStream::connect(key)
+    async fn connect(&self, key: P) -> Result<Self::Connection, Self::Error> {
+        UnixStream::connect(key).await
     }
 }
 
@@ -94,7 +89,7 @@ impl<C: Default> Default for TlsConnector<C> {
     #[cfg(not(feature = "native-tls"))]
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
                 ta.subject,
                 ta.spki,
@@ -131,15 +126,13 @@ where
 {
     type Connection = TlsStream<C::Connection>;
     type Error = monoio_rustls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a, T: 'a;
 
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
         let server_name = key.param();
-        async move {
-            let stream = self.inner_connector.connect(key).await?;
-            let tls_stream = self.tls_connector.connect(server_name, stream).await?;
-            Ok(tls_stream)
-        }
+
+        let stream = self.inner_connector.connect(key).await?;
+        let tls_stream = self.tls_connector.connect(server_name, stream).await?;
+        Ok(tls_stream)
     }
 }
 
@@ -189,7 +182,9 @@ impl HttpConnector {
         };
 
         match proto {
-            Version::HTTP_11 => Ok(HttpConnection::H1(Some(ClientCodec::new(io)))),
+            Version::HTTP_11 => Ok(HttpConnection::H1(Rc::new(UnsafeCell::new(
+                ClientCodec::new(io),
+            )))),
             Version::HTTP_2 => {
                 let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {
@@ -271,21 +266,18 @@ where
 {
     type Connection = PooledConnection<K, IO>;
     type Error = crate::Error;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a;
 
-    fn connect(&self, key: K) -> Self::ConnectionFuture<'_> {
-        async move {
-            if let Some(conn) = self.pool.get(&key) {
-                return Ok(conn);
-            }
-            let key_owned = key.to_owned();
-            let io = self.transport_connector.connect(key).await?;
-
-            let pipe = self
-                .http_connector
-                .connect(io, key_owned.get_version())
-                .await?;
-            Ok(self.pool.link(key_owned, pipe))
+    async fn connect(&self, key: K) -> Result<Self::Connection, Self::Error> {
+        if let Some(conn) = self.pool.get(&key) {
+            return Ok(conn);
         }
+        let key_owned = key.to_owned();
+        let io = self.transport_connector.connect(key).await?;
+
+        let pipe = self
+            .http_connector
+            .connect(io, key_owned.get_version())
+            .await?;
+        Ok(self.pool.link(key_owned, pipe))
     }
 }

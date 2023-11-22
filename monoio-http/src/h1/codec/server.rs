@@ -30,31 +30,16 @@ where
 {
     type Error = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::Error;
 
-    type SendFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::SendFuture<'a>
-    where
-        Self: 'a, R: 'a;
-
-    type FlushFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::FlushFuture<'a>
-    where
-        Self: 'a;
-
-    type CloseFuture<'a> = <GenericEncoder<OwnedWriteHalf<IO>> as Sink<R>>::CloseFuture<'a>
-    where
-        Self: 'a;
-
-    fn send<'a>(&'a mut self, item: R) -> Self::SendFuture<'a>
-    where
-        R: 'a,
-    {
-        self.encoder.send(item)
+    async fn send(&mut self, item: R) -> Result<(), Self::Error> {
+        self.encoder.send(item).await
     }
 
-    fn flush(&mut self) -> Self::FlushFuture<'_> {
-        self.encoder.flush()
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.encoder.flush().await
     }
 
-    fn close(&mut self) -> Self::CloseFuture<'_> {
-        self.encoder.close()
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.encoder.close().await
     }
 }
 
@@ -64,12 +49,8 @@ where
 {
     type Error = <RequestDecoder<OwnedReadHalf<IO>> as FillPayload>::Error;
 
-    type FillPayloadFuture<'a> = <RequestDecoder<OwnedReadHalf<IO>> as FillPayload>::FillPayloadFuture<'a>
-    where
-        Self: 'a;
-
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_> {
-        self.decoder.fill_payload()
+    async fn fill_payload(&mut self) -> Result<(), Self::Error> {
+        self.decoder.fill_payload().await
     }
 }
 
@@ -79,11 +60,7 @@ where
 {
     type Item = <RequestDecoder<OwnedReadHalf<IO>> as Stream>::Item;
 
-    type NextFuture<'a> = <RequestDecoder<OwnedReadHalf<IO>> as Stream>::NextFuture<'a>
-    where
-        Self: 'a;
-
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        self.decoder.next()
+    async fn next(&mut self) -> Option<Self::Item> {
+        self.decoder.next().await
     }
 }

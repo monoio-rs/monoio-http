@@ -8,28 +8,31 @@ description = "Http client for Monoio."
 edition = "2021"
 license = "MIT/Apache-2.0"
 name = "monoio-http-client"
-version = "0.2.5"
+version = "0.3.0"
 
 [dependencies]
-monoio = { version = "0.1.5" }
-monoio-http = { version = "0.2.0", path = "../monoio-http" }
-monoio-rustls = { version = "0.1.2" }
-monoio-native-tls = { version = "0.1.0", optional = true }
-service-async = { version = "0.1.2" }
+monoio = { workspace = true }
+monoio-rustls = { workspace = true }
+monoio-native-tls = { workspace = true, optional = true }
+service-async = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+local-sync = { workspace = true }
 
-bytes = "1"
-http = "0.2"
-local-sync = "0.1"
+monoio-http = { version = "0.3.0", path = "../monoio-http" }
+
 serde = "1"
 serde_json = "1"
 smol_str = "0.2"
-thiserror = "1"
+
 rustls = { version = "0", default-features = false, features = [
     "dangerous_configuration",
 ] }
-tracing = { version = "0.1", optional = true }
-webpki-roots = "0.23"
+webpki-roots = "0.25.2"
 native-tls = { version = "0.2", optional = true }
+
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

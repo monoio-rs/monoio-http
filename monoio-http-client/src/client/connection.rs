@@ -1,4 +1,4 @@
-use std::{future::poll_fn, task::Poll};
+use std::{cell::UnsafeCell, future::poll_fn, rc::Rc, task::Poll};
 
 use bytes::Bytes;
 use monoio::io::{sink::SinkExt, stream::Stream, AsyncReadRent, AsyncWriteRent, Split};
@@ -10,8 +10,11 @@ use monoio_http::{
         response::Response,
     },
     h1::{
-        codec::{decoder::DecodeError, ClientCodec},
-        payload::FramedPayloadRecvr,
+        codec::{
+            decoder::{DecodeError, PayloadDecoder},
+            ClientCodec,
+        },
+        payload::{fixed_payload_pair, stream_payload_pair, Payload},
     },
     h2::{client::SendRequest, SendStream},
 };
@@ -115,7 +118,7 @@ impl<B: Body<Data = Bytes>> StreamBodyTask<B> {
 }
 
 pub enum HttpConnection<IO: AsyncWriteRent> {
-    H1(Option<ClientCodec<IO>>),
+    H1(Rc<UnsafeCell<ClientCodec<IO>>>),
     H2(SendRequest<Bytes>),
 }
 
@@ -128,11 +131,8 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
         B: Body<Data = Bytes, Error = HttpError> + 'static,
     {
         match self {
-            Self::H1(ref mut handle) => {
-                let mut h = match handle.take() {
-                    Some(h) => h,
-                    None => return (Err(crate::Error::MissingCodec), false),
-                };
+            Self::H1(handle) => {
+                let h = unsafe { &mut *handle.get() };
 
                 if let Err(e) = h.send_and_flush(request).await {
                     #[cfg(feature = "logging")]
@@ -142,21 +142,48 @@ impl<IO: AsyncReadRent + AsyncWriteRent + Split> HttpConnection<IO> {
 
                 match h.next().await {
                     Some(Ok(resp)) => {
-                        let (data_tx, data_rx) = local_sync::mpsc::unbounded::channel();
-                        let (parts, body_builder) = resp.into_parts();
-                        let mut framed_payload = body_builder.with_io(h);
-                        let framed_payload_rcvr = FramedPayloadRecvr {
-                            data_rx,
-                            hint: framed_payload.stream_hint(),
-                        };
-
-                        while let Some(r) = framed_payload.next_data().await {
-                            let _ = data_tx.send(Some(r));
+                        let (parts, payload_decoder) = resp.into_parts();
+                        match payload_decoder {
+                            PayloadDecoder::None => {
+                                let payload = Payload::None;
+                                let response = Response::from_parts(parts, payload.into());
+                                (Ok(response), false)
+                            }
+                            PayloadDecoder::Fixed(_) => {
+                                let mut framed_payload = payload_decoder.with_io(handle.clone());
+                                let (payload, payload_sender) = fixed_payload_pair();
+                                if let Some(data) = framed_payload.next_data().await {
+                                    payload_sender.feed(data)
+                                }
+                                let payload = Payload::Fixed(payload);
+                                let response = Response::from_parts(parts, payload.into());
+                                (Ok(response), false)
+                            }
+                            PayloadDecoder::Streamed(_) => {
+                                let mut framed_payload = payload_decoder.with_io(handle.clone());
+                                let (payload, mut payload_sender) = stream_payload_pair();
+                                loop {
+                                    match framed_payload.next_data().await {
+                                        Some(Ok(data)) => payload_sender.feed_data(Some(data)),
+                                        Some(Err(e)) => {
+                                            #[cfg(feature = "logging")]
+                                            tracing::error!(
+                                                "decode upstream response error {:?}",
+                                                e
+                                            );
+                                            return (Err(e.into()), false);
+                                        }
+                                        None => {
+                                            payload_sender.feed_data(None);
+                                            break;
+                                        }
+                                    }
+                                }
+                                let payload = Payload::Stream(payload);
+                                let response = Response::from_parts(parts, payload.into());
+                                (Ok(response), false)
+                            }
                         }
-                        *handle = Some(framed_payload.get_source());
-
-                        let resp = Response::from_parts(parts, framed_payload_rcvr.into());
-                        (Ok(resp), false)
                     }
                     Some(Err(e)) => {
                         #[cfg(feature = "logging")]

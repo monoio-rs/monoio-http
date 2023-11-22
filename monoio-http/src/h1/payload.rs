@@ -47,17 +47,11 @@ impl<D: IoBuf, E> Body for Payload<D, E> {
     type Data = D;
     type Error = E;
 
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<D, E>>> + 'a
-    where
-        Self: 'a;
-
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move {
-            match self {
-                Payload::None => None,
-                Payload::Fixed(p) => p.next().await,
-                Payload::Stream(p) => p.next().await,
-            }
+    async fn next_data(&mut self) -> Option<Result<D, E>> {
+        match self {
+            Payload::None => None,
+            Payload::Fixed(p) => p.next().await,
+            Payload::Stream(p) => p.next().await,
         }
     }
 
@@ -158,34 +152,30 @@ impl<D, E> FixedInner<D, E> {
 impl<D: IoBuf, E> Stream for FixedPayload<D, E> {
     type Item = Result<D, E>;
 
-    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
-
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            loop {
-                {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.eof {
-                        return None;
-                    }
-                    if let Some(item) = inner.item.take() {
-                        inner.eof = true;
-                        return Some(item);
-                    }
+    async fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.eof {
+                    return None;
                 }
-                poll_fn(|cx| {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.item.is_some() {
-                        std::task::Poll::Ready(())
-                    } else {
-                        if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
-                            inner.task = Some(cx.waker().clone());
-                        }
-                        std::task::Poll::Pending
-                    }
-                })
-                .await;
+                if let Some(item) = inner.item.take() {
+                    inner.eof = true;
+                    return Some(item);
+                }
             }
+            poll_fn(|cx| {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.item.is_some() {
+                    std::task::Poll::Ready(())
+                } else {
+                    if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
+                        inner.task = Some(cx.waker().clone());
+                    }
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
     }
 }
@@ -254,33 +244,29 @@ impl<D, E> StreamInner<D, E> {
 impl<D: IoBuf, E> Stream for StreamPayload<D, E> {
     type Item = Result<D, E>;
 
-    type NextFuture<'a> = impl std::future::Future<Output = Option<Self::Item>> + 'a where Self:'a;
-
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            loop {
-                {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if let Some(data) = inner.items.pop_front() {
-                        return Some(data);
-                    }
-                    if inner.eof {
-                        return None;
-                    }
+    async fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            {
+                let inner = unsafe { &mut *self.inner.get() };
+                if let Some(data) = inner.items.pop_front() {
+                    return Some(data);
                 }
-                poll_fn(|cx| {
-                    let inner = unsafe { &mut *self.inner.get() };
-                    if inner.eof || !inner.items.is_empty() {
-                        std::task::Poll::Ready(())
-                    } else {
-                        if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
-                            inner.task = Some(cx.waker().clone());
-                        }
-                        std::task::Poll::Pending
-                    }
-                })
-                .await;
+                if inner.eof {
+                    return None;
+                }
             }
+            poll_fn(|cx| {
+                let inner = unsafe { &mut *self.inner.get() };
+                if inner.eof || !inner.items.is_empty() {
+                    std::task::Poll::Ready(())
+                } else {
+                    if !matches!(inner.task, Some(ref waker) if waker.will_wake(cx.waker())) {
+                        inner.task = Some(cx.waker().clone());
+                    }
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
     }
 }
@@ -306,40 +292,19 @@ impl<D, E> StreamPayloadSender<D, E> {
     }
 }
 
-pub struct FramedPayloadRecvr {
-    pub data_rx: local_sync::mpsc::unbounded::Rx<Option<Result<Bytes, HttpError>>>,
-    pub hint: StreamHint,
-}
-
-impl Body for FramedPayloadRecvr {
-    type Data = Bytes;
-    type Error = HttpError;
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
-    where
-        Self: 'a;
-
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move { self.data_rx.recv().await? }
-    }
-
-    fn stream_hint(&self) -> StreamHint {
-        self.hint
-    }
-}
-
 /// Payload with io and codec, mainly used by client.
 pub struct FramedPayload<T> {
     // The io provider.
     // Normally ClientCodec. Since we may want to reuse it later,
     // so we may require it to provide something we can do read.
-    io_source: T,
+    io_source: Rc<UnsafeCell<T>>,
     payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     eof: bool,
 }
 
 impl<T> FramedPayload<T> {
     pub fn new(
-        io_source: T,
+        io_source: Rc<UnsafeCell<T>>,
         payload_decoder: PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>,
     ) -> Self {
         Self {
@@ -347,10 +312,6 @@ impl<T> FramedPayload<T> {
             payload_decoder,
             eof: false,
         }
-    }
-
-    pub fn get_source(self) -> T {
-        self.io_source
     }
 }
 
@@ -361,36 +322,33 @@ where
 {
     type Data = Bytes;
     type Error = HttpError;
-    type DataFuture<'a> = impl std::future::Future<Output = Option<Result<Self::Data, Self::Error>>> + 'a
-    where
-        Self: 'a;
 
-    fn next_data(&mut self) -> Self::DataFuture<'_> {
-        async move {
-            if self.eof {
-                return None;
-            }
-            // The logic here is alike with GenericDecoder's Fillpayload
-            match &mut self.payload_decoder {
-                PayloadDecoder::None => None,
-                PayloadDecoder::Fixed(decoder) => {
-                    self.eof = true;
-                    match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof.into())),
-                        Some(Ok(item)) => Some(Ok(item)),
-                        Some(Err(e)) => Some(Err(e.into())),
-                    }
+    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
+        if self.eof {
+            return None;
+        }
+        // The logic here is alike with GenericDecoder's Fillpayload
+        match &mut self.payload_decoder {
+            PayloadDecoder::None => None,
+            PayloadDecoder::Fixed(decoder) => {
+                let io_source = unsafe { &mut *self.io_source.get() };
+                self.eof = true;
+                match io_source.framed_mut().next_with(decoder).await {
+                    None => Some(Err(DecodeError::UnexpectedEof.into())),
+                    Some(Ok(item)) => Some(Ok(item)),
+                    Some(Err(e)) => Some(Err(e.into())),
                 }
-                PayloadDecoder::Streamed(decoder) => {
-                    match self.io_source.framed_mut().next_with(decoder).await {
-                        None => Some(Err(DecodeError::UnexpectedEof.into())),
-                        Some(Ok(Some(item))) => Some(Ok(item)),
-                        Some(Ok(None)) => {
-                            self.eof = true;
-                            None
-                        }
-                        Some(Err(e)) => Some(Err(e.into())),
+            }
+            PayloadDecoder::Streamed(decoder) => {
+                let io_source = unsafe { &mut *self.io_source.get() };
+                match io_source.framed_mut().next_with(decoder).await {
+                    None => Some(Err(DecodeError::UnexpectedEof.into())),
+                    Some(Ok(Some(item))) => Some(Ok(item)),
+                    Some(Ok(None)) => {
+                        self.eof = true;
+                        None
                     }
+                    Some(Err(e)) => Some(Err(e.into())),
                 }
             }
         }

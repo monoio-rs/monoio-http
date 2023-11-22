@@ -1,4 +1,7 @@
-use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
+use std::{
+    borrow::Cow, cell::UnsafeCell, future::Future, hint::unreachable_unchecked, io,
+    marker::PhantomData, rc::Rc,
+};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -6,7 +9,7 @@ use http::{
     HeaderMap, HeaderValue, Method, StatusCode, Uri, Version,
 };
 use monoio::io::{stream::Stream, AsyncReadRent, OwnedReadHalf};
-use monoio_codec::{Decoder, FramedRead};
+use monoio_codec::{Decoded, Decoder, FramedRead};
 use thiserror::Error as ThisError;
 
 use crate::{
@@ -98,19 +101,19 @@ impl Decoder for RequestHeadDecoder {
     type Item = RequestHead;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Decoded<Self::Item>, Self::Error> {
         let header_data = match memchr::memmem::find(src, b"\r\n\r\n")
             .map(|idx| src.split_to(idx + 4).freeze())
         {
             Some(h) => h,
-            None => return Ok(None),
+            None => return Ok(Decoded::Insufficient),
         };
         let base_ptr = header_data.as_ptr() as usize;
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
         let parse_status = req.parse(&header_data)?;
         if httparse::Status::Partial == parse_status {
-            return Ok(None);
+            return Ok(Decoded::Insufficient);
         }
         let mut headers = HeaderMap::with_capacity(req.headers.len());
         for h in req.headers.iter() {
@@ -145,7 +148,7 @@ impl Decoder for RequestHeadDecoder {
         request_head.version = version;
         request_head.headers = headers;
 
-        Ok(Some(request_head))
+        Ok(Decoded::Some(request_head))
     }
 }
 
@@ -158,19 +161,19 @@ impl Decoder for ResponseHeadDecoder {
     type Item = ResponseHead;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Decoded<Self::Item>, Self::Error> {
         let header_data = match memchr::memmem::find(src, b"\r\n\r\n")
             .map(|idx| src.split_to(idx + 4).freeze())
         {
             Some(h) => h,
-            None => return Ok(None),
+            None => return Ok(Decoded::Insufficient),
         };
         let base_ptr = header_data.as_ptr() as usize;
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut res = httparse::Response::new(&mut headers);
         let parse_status = res.parse(&header_data)?;
         if httparse::Status::Partial == parse_status {
-            return Ok(None);
+            return Ok(Decoded::Insufficient);
         }
 
         let mut headers = HeaderMap::with_capacity(res.headers.len());
@@ -205,7 +208,7 @@ impl Decoder for ResponseHeadDecoder {
             response_head.extensions.insert(Reason::from(reason));
         }
 
-        Ok(Some(response_head))
+        Ok(Decoded::Some(response_head))
     }
 }
 
@@ -217,12 +220,12 @@ impl Decoder for FixedBodyDecoder {
     type Error = DecodeError;
 
     #[inline]
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Decoded<Self::Item>, Self::Error> {
         if src.len() < self.0 {
-            return Ok(None);
+            return Ok(Decoded::Insufficient);
         }
         let body = src.split_to(self.0).freeze();
-        Ok(Some(body))
+        Ok(Decoded::Some(body))
     }
 }
 
@@ -235,13 +238,13 @@ impl Decoder for ChunkedBodyDecoder {
     type Item = Option<Bytes>;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Decoded<Self::Item>, Self::Error> {
         loop {
             match self.0 {
                 Some(len) => {
                     // Now we know how long we need
                     if src.len() < len + 2 {
-                        return Ok(None);
+                        return Ok(Decoded::Insufficient);
                     }
                     // \r\n
                     if &src[len..len + 2] != b"\r\n" {
@@ -255,13 +258,13 @@ impl Decoder for ChunkedBodyDecoder {
                     };
                     src.advance(2);
                     self.0 = None;
-                    return Ok(Some(data));
+                    return Ok(Decoded::Some(data));
                 }
                 None => {
                     // We don't know what size the next block is.
                     if src.len() < 3 {
                         // There must be at least 3 bytes("0\r\n").
-                        return Ok(None);
+                        return Ok(Decoded::Insufficient);
                     }
                     let mut len: usize = 0;
                     let mut read = 0;
@@ -289,7 +292,7 @@ impl Decoder for ChunkedBodyDecoder {
                         return Err(DecodeError::Chunked);
                     }
                     if src.len() < read + 2 {
-                        return Ok(None);
+                        return Ok(Decoded::Insufficient);
                     }
                     if &src[read..read + 2] != b"\r\n" {
                         return Err(DecodeError::Chunked);
@@ -404,16 +407,16 @@ where
     type Error = HttpError;
 
     #[inline]
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Decoded<Self::Item>, Self::Error> {
         match self.decoder.decode(src) {
             // TODO:
             // 1. iter single pass to find out content length and if is chunked
             // 2. validate headers to make sure content length can not be set with chunked encoding
-            Ok(Some(head)) => {
+            Ok(Decoded::Some(head)) => {
                 if let Some(x) = head.header_map().get(http::header::TRANSFER_ENCODING) {
                     // Check chunked
                     if x.as_bytes().eq_ignore_ascii_case(b"chunked") {
-                        return Ok(Some(F::wrap_stream(head)));
+                        return Ok(Decoded::Some(F::wrap_stream(head)));
                     }
                     // Check not identity
                     if !x.as_bytes().eq_ignore_ascii_case(b"identity") {
@@ -434,14 +437,15 @@ where
                         Err(_) => return Err(DecodeError::Header.into()),
                     };
                     if content_length == 0 {
-                        return Ok(Some(F::wrap_none(head)));
+                        return Ok(Decoded::Some(F::wrap_none(head)));
                     } else {
-                        return Ok(Some(F::wrap_fixed(head, content_length)));
+                        return Ok(Decoded::Some(F::wrap_fixed(head, content_length)));
                     }
                 }
-                Ok(Some(F::wrap_none(head)))
+                Ok(Decoded::Some(F::wrap_none(head)))
             }
-            Ok(None) => Ok(None),
+            Ok(Decoded::Insufficient) => Ok(Decoded::Insufficient),
+            Ok(Decoded::InsufficientAtLeast(l)) => Ok(Decoded::InsufficientAtLeast(l)),
             Err(e) => Err(e.into()),
         }
     }
@@ -466,11 +470,8 @@ where
 
 pub trait FillPayload {
     type Error;
-    type FillPayloadFuture<'a>: std::future::Future<Output = Result<(), Self::Error>>
-    where
-        Self: 'a;
 
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_>;
+    fn fill_payload(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
 impl<IO, HD, I> FillPayload for GenericDecoder<IO, HD>
@@ -483,65 +484,59 @@ where
 {
     type Error = HttpError;
 
-    type FillPayloadFuture<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    fn fill_payload(&mut self) -> Self::FillPayloadFuture<'_> {
-        async move {
-            loop {
-                match &mut self.next_decoder {
-                    // If there is no next_decoder, use main decoder
-                    NextDecoder::None => {
-                        return Ok(());
-                    }
-                    NextDecoder::Fixed(_, _) => {
-                        // Swap sender out
-                        let (mut decoder, sender) =
-                            match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
-                                NextDecoder::None => unsafe { unreachable_unchecked() },
-                                NextDecoder::Fixed(decoder, sender) => (decoder, sender),
-                                NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
-                            };
-                        match self.framed.next_with(&mut decoder).await {
-                            // EOF
-                            None => {
-                                sender.feed(Err((PayloadError::UnexpectedEof).into()));
-                                return Err(DecodeError::UnexpectedEof.into());
-                            }
-                            Some(Ok(item)) => {
-                                sender.feed(Ok(item));
-                            }
-                            Some(Err(e)) => {
-                                sender.feed(Err(PayloadError::Decode.into()));
-                                return Err(e.into());
-                            }
+    async fn fill_payload(&mut self) -> Result<(), Self::Error> {
+        loop {
+            match &mut self.next_decoder {
+                // If there is no next_decoder, use main decoder
+                NextDecoder::None => {
+                    return Ok(());
+                }
+                NextDecoder::Fixed(_, _) => {
+                    // Swap sender out
+                    let (mut decoder, sender) =
+                        match std::mem::replace(&mut self.next_decoder, NextDecoder::None) {
+                            NextDecoder::None => unsafe { unreachable_unchecked() },
+                            NextDecoder::Fixed(decoder, sender) => (decoder, sender),
+                            NextDecoder::Streamed(_, _) => unsafe { unreachable_unchecked() },
+                        };
+                    match self.framed.next_with(&mut decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed(Err((PayloadError::UnexpectedEof).into()));
+                            return Err(DecodeError::UnexpectedEof.into());
+                        }
+                        Some(Ok(item)) => {
+                            sender.feed(Ok(item));
+                        }
+                        Some(Err(e)) => {
+                            sender.feed(Err(PayloadError::Decode.into()));
+                            return Err(e.into());
                         }
                     }
-                    NextDecoder::Streamed(decoder, sender) => {
-                        match self.framed.next_with(decoder).await {
-                            // EOF
-                            None => {
-                                sender.feed_error(PayloadError::UnexpectedEof.into());
-                                return Err(DecodeError::UnexpectedEof.into());
-                            }
-                            Some(Ok(item)) => {
-                                // Send data
-                                match item {
-                                    Some(item) => {
-                                        sender.feed_data(Some(item));
-                                    }
-                                    None => {
-                                        sender.feed_data(None);
-                                        self.next_decoder = NextDecoder::None;
-                                    }
+                }
+                NextDecoder::Streamed(decoder, sender) => {
+                    match self.framed.next_with(decoder).await {
+                        // EOF
+                        None => {
+                            sender.feed_error(PayloadError::UnexpectedEof.into());
+                            return Err(DecodeError::UnexpectedEof.into());
+                        }
+                        Some(Ok(item)) => {
+                            // Send data
+                            match item {
+                                Some(item) => {
+                                    sender.feed_data(Some(item));
+                                }
+                                None => {
+                                    sender.feed_data(None);
+                                    self.next_decoder = NextDecoder::None;
                                 }
                             }
-                            Some(Err(e)) => {
-                                // Send error
-                                sender.feed_error(PayloadError::Decode.into());
-                                return Err(e.into());
-                            }
+                        }
+                        Some(Err(e)) => {
+                            // Send error
+                            sender.feed_error(PayloadError::Decode.into());
+                            return Err(e.into());
                         }
                     }
                 }
@@ -559,24 +554,21 @@ where
     >,
 {
     type Item = Result<I, HttpError>;
-    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
 
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            if !matches!(self.next_decoder, NextDecoder::None) {
-                if let Err(e) = self.fill_payload().await {
-                    return Some(Err(e));
-                }
+    async fn next(&mut self) -> Option<Self::Item> {
+        if !matches!(self.next_decoder, NextDecoder::None) {
+            if let Err(e) = self.fill_payload().await {
+                return Some(Err(e));
             }
+        }
 
-            match self.framed.next().await {
-                None => None,
-                Some(Ok((item, next_decoder))) => {
-                    self.next_decoder = next_decoder;
-                    Some(Ok(item))
-                }
-                Some(Err(e)) => Some(Err(e)),
+        match self.framed.next().await {
+            None => None,
+            Some(Ok((item, next_decoder))) => {
+                self.next_decoder = next_decoder;
+                Some(Ok(item))
             }
+            Some(Err(e)) => Some(Err(e)),
         }
     }
 }
@@ -615,20 +607,17 @@ where
 {
     type Item =
         Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, HttpError>;
-    type NextFuture<'a> = impl Future<Output = Option<Self::Item>> + 'a where Self: 'a;
 
-    fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            match self.framed.next().await? {
-                Err(e) => Some(Err(e)),
-                Ok((header, decoder)) => Some(Ok(http::Response::from_parts(header, decoder))),
-            }
+    async fn next(&mut self) -> Option<Self::Item> {
+        match self.framed.next().await? {
+            Err(e) => Some(Err(e)),
+            Ok((header, decoder)) => Some(Ok(http::Response::from_parts(header, decoder))),
         }
     }
 }
 
 impl PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder> {
-    pub fn with_io<IO>(self, next_with: IO) -> FramedPayload<IO> {
+    pub fn with_io<IO>(self, next_with: Rc<UnsafeCell<IO>>) -> FramedPayload<IO> {
         FramedPayload::new(next_with, self)
     }
 }
@@ -648,7 +637,7 @@ mod tests {
     use std::{collections::VecDeque, time::Instant};
 
     use bytes::BytesMut;
-    use monoio::{buf::IoVecWrapperMut, io::stream::Stream};
+    use monoio::{buf::IoVecWrapperMut, io::stream::Stream, BufResult};
 
     use super::*;
 
@@ -657,7 +646,7 @@ mod tests {
         let current = Instant::now();
         for _ in 1..10000 {
             let mut data = BytesMut::from("GET /ping HTTP/1.1\r\n\r\n");
-            let _ = RequestHeadDecoder.decode(&mut data).unwrap().unwrap();
+            let _ = RequestHeadDecoder.decode(&mut data).unwrap();
         }
         let elapse = current.elapsed().as_millis();
 
@@ -667,11 +656,14 @@ mod tests {
     #[test]
     fn decode_request_header() {
         let mut data = BytesMut::from("GET /test HTTP/1.1\r\n\r\n");
-        let head = RequestHeadDecoder.decode(&mut data).unwrap().unwrap();
-        assert_eq!(head.method, Method::GET);
-        assert_eq!(head.version, Version::HTTP_11);
-        assert_eq!(head.uri, "/test");
-        assert!(data.is_empty());
+        if let Decoded::Some(head) = RequestHeadDecoder.decode(&mut data).unwrap() {
+            assert_eq!(head.method, Method::GET);
+            assert_eq!(head.version, Version::HTTP_11);
+            assert_eq!(head.uri, "/test");
+            assert!(data.is_empty());
+        } else {
+            assert!(false);
+        }
     }
 
     #[test]
@@ -680,7 +672,7 @@ mod tests {
         for _ in 1..10000 {
             let mut data =
                 BytesMut::from("HTTP/1.1 200 OK\r\nContent-Type:application/json\r\n\r\n");
-            let _ = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
+            let _ = ResponseHeadDecoder.decode(&mut data).unwrap();
         }
         let elapse = current.elapsed().as_millis();
 
@@ -690,14 +682,17 @@ mod tests {
     #[test]
     fn decode_response_header() {
         let mut data = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Type:application/json\r\n\r\n");
-        let head = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
-        assert_eq!(head.status, StatusCode::OK);
-        assert_eq!(head.version, Version::HTTP_11);
-        assert_eq!(
-            head.headers.get(http::header::CONTENT_TYPE),
-            Some(&HeaderValue::from_static("application/json"))
-        );
-        assert!(data.is_empty());
+        if let Decoded::Some(head) = ResponseHeadDecoder.decode(&mut data).unwrap() {
+            assert_eq!(head.status, StatusCode::OK);
+            assert_eq!(head.version, Version::HTTP_11);
+            assert_eq!(
+                head.headers.get(http::header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static("application/json"))
+            );
+            assert!(data.is_empty());
+        } else {
+            assert!(false)
+        }
     }
 
     #[test]
@@ -706,7 +701,7 @@ mod tests {
         for _ in 1..10000 {
             let mut data = BytesMut::from("balabalabalabala");
             let mut decoder = FixedBodyDecoder(8);
-            let _ = decoder.decode(&mut data).unwrap().unwrap();
+            let _ = decoder.decode(&mut data).unwrap();
         }
 
         let elapse = current.elapsed().as_millis();
@@ -718,31 +713,49 @@ mod tests {
     fn decode_fixed_body() {
         let mut data = BytesMut::from("balabalabalabala");
         let mut decoder = FixedBodyDecoder(8);
-        let head = decoder.decode(&mut data).unwrap().unwrap();
-        assert_eq!(&head, &"balabala");
-        assert_eq!(data.len(), 8);
+
+        if let Decoded::Some(head) = decoder.decode(&mut data).unwrap() {
+            assert_eq!(&head, &"balabala");
+            assert_eq!(data.len(), 8);
+        } else {
+            assert!(false);
+        }
     }
 
     #[test]
     fn decode_chunked_body() {
         let mut data = BytesMut::from("a\r\n0000000000\r\n1\r\nx\r\n0\r\n\r\n");
         let mut decoder = ChunkedBodyDecoder::default();
-        assert_eq!(
-            &decoder.decode(&mut data).unwrap().unwrap().unwrap(),
-            &"0000000000"
-        );
-        assert_eq!(&decoder.decode(&mut data).unwrap().unwrap().unwrap(), &"x");
-        assert!(decoder.decode(&mut data).unwrap().unwrap().is_none());
+        match decoder.decode(&mut data).unwrap() {
+            Decoded::Some(Some(data)) => {
+                assert_eq!(&data, &"0000000000");
+            }
+            _ => assert!(false),
+        }
+        match decoder.decode(&mut data).unwrap() {
+            Decoded::Some(Some(data)) => {
+                assert_eq!(&data, &"x");
+            }
+            _ => assert!(false),
+        }
+        match decoder.decode(&mut data).unwrap() {
+            Decoded::Some(data) => {
+                assert!(data.is_none());
+            }
+            _ => assert!(false),
+        }
     }
 
     #[test]
     fn decode_too_big_chunked_body() {
         let mut data = BytesMut::from("a\r\n0000000000\r\ndeadbeefcafebabe0\r\nx\r\n0\r\n\r\n");
         let mut decoder = ChunkedBodyDecoder::default();
-        assert_eq!(
-            &decoder.decode(&mut data).unwrap().unwrap().unwrap(),
-            &"0000000000"
-        );
+        match decoder.decode(&mut data).unwrap() {
+            Decoded::Some(Some(data)) => {
+                assert_eq!(&data, &"0000000000");
+            }
+            _ => assert!(false),
+        }
         assert!(&decoder.decode(&mut data).is_err());
     }
 
@@ -858,43 +871,34 @@ mod tests {
     }
 
     impl AsyncReadRent for Mock {
-        type ReadFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> +'a where
-                B: monoio::buf::IoBufMut + 'a;
-        type ReadvFuture<'a, B> = impl std::future::Future<Output = monoio::BufResult<usize, B>> + 'a where
-                B: monoio::buf::IoVecBufMut + 'a;
-
-        fn read<T: monoio::buf::IoBufMut>(&mut self, mut buf: T) -> Self::ReadFuture<'_, T> {
-            async {
-                match self.calls.pop_front() {
-                    Some(Ok(data)) => {
-                        let n = data.len();
-                        debug_assert!(buf.bytes_total() >= n);
-                        unsafe {
-                            buf.write_ptr().copy_from_nonoverlapping(data.as_ptr(), n);
-                            buf.set_init(n)
-                        }
-                        (Ok(n), buf)
+        async fn read<T: monoio::buf::IoBufMut>(&mut self, mut buf: T) -> BufResult<usize, T> {
+            match self.calls.pop_front() {
+                Some(Ok(data)) => {
+                    let n = data.len();
+                    debug_assert!(buf.bytes_total() >= n);
+                    unsafe {
+                        buf.write_ptr().copy_from_nonoverlapping(data.as_ptr(), n);
+                        buf.set_init(n)
                     }
-                    Some(Err(e)) => (Err(e), buf),
-                    None => (Ok(0), buf),
+                    (Ok(n), buf)
                 }
+                Some(Err(e)) => (Err(e), buf),
+                None => (Ok(0), buf),
             }
         }
 
-        fn readv<T: monoio::buf::IoVecBufMut>(&mut self, mut buf: T) -> Self::ReadvFuture<'_, T> {
-            async move {
-                let slice = match IoVecWrapperMut::new(buf) {
-                    Ok(slice) => slice,
-                    Err(buf) => return (Ok(0), buf),
-                };
+        async fn readv<T: monoio::buf::IoVecBufMut>(&mut self, mut buf: T) -> BufResult<usize, T> {
+            let slice = match IoVecWrapperMut::new(buf) {
+                Ok(slice) => slice,
+                Err(buf) => return (Ok(0), buf),
+            };
 
-                let (result, slice) = self.read(slice).await;
-                buf = slice.into_inner();
-                if let Ok(n) = result {
-                    unsafe { buf.set_init(n) };
-                }
-                (result, buf)
+            let (result, slice) = self.read(slice).await;
+            buf = slice.into_inner();
+            if let Ok(n) = result {
+                unsafe { buf.set_init(n) };
             }
+            (result, buf)
         }
     }
 }
