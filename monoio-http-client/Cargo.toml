@@ -8,7 +8,7 @@ description = "Http client for Monoio."
 edition = "2021"
 license = "MIT/Apache-2.0"
 name = "monoio-http-client"
-version = "0.3.0"
+version = "0.3.1"
 
 [dependencies]
 monoio = { workspace = true }
@@ -20,7 +20,7 @@ http = { workspace = true }
 thiserror = { workspace = true }
 local-sync = { workspace = true }
 
-monoio-http = { version = "0.3.0", path = "../monoio-http" }
+monoio-http = { version = "0.3.1", path = "../monoio-http" }
 
 serde = "1"
 serde_json = "1"
