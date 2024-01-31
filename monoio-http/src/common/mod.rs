@@ -4,6 +4,9 @@ pub mod error;
 pub mod ext;
 pub mod request;
 pub mod response;
+#[macro_use]
+pub(crate) mod macros;
+
 pub(crate) mod waker;
 
 pub trait FromParts<P, B = Bytes> {

@@ -25,6 +25,7 @@ pub struct Error {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum Kind {
     /// A RST_STREAM frame was received or sent.
     Reset(StreamId, Reason, Initiator),
