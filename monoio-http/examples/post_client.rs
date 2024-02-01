@@ -40,7 +40,7 @@ async fn main() {
         .expect("unable to connect");
     let (r, w) = conn.into_split();
     let mut sender = GenericEncoder::new(w);
-    let mut receiver = ResponseDecoder::new(r);
+    let mut receiver = ResponseDecoder::new(r, None);
 
     println!("Connected, will send request");
     sender

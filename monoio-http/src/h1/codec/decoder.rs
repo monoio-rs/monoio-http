@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
+use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData, time::Duration};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -47,6 +47,8 @@ pub enum DecodeError {
     Io(#[from] io::Error),
     #[error("unexpected eof")]
     UnexpectedEof,
+    #[error("timeout error")]
+    TimedOut,
 }
 
 /// NextDecoder maybe None, Fixed or Streamed.
@@ -451,16 +453,18 @@ where
 pub struct GenericDecoder<IO, HD> {
     framed: FramedRead<IO, HD>,
     next_decoder: NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>,
+    timeout: Option<Duration>,
 }
 
 impl<IO, HD> GenericDecoder<IO, HD>
 where
     HD: Default,
 {
-    pub fn new(io: IO) -> Self {
+    pub fn new(io: IO, timeout: Option<Duration>) -> Self {
         Self {
             framed: FramedRead::new(io, HD::default()),
             next_decoder: NextDecoder::default(),
+            timeout: timeout,
         }
     }
 }
@@ -559,6 +563,22 @@ where
             }
         }
 
+        match self.timeout {
+            Some(duration) => {
+                match monoio::time::timeout(duration, self.framed.peek_data()).await {
+                    Err(_) => {
+                        return Some(Err(DecodeError::TimedOut.into()));
+                    }
+                    Ok(Err(e)) => {
+                        return Some(Err(e.into()));
+                    }
+                    Ok(Ok(_)) => {
+                    }
+                }
+            }
+            None => {}
+        }
+
         match self.framed.next().await {
             None => None,
             Some(Ok((item, next_decoder))) => {
@@ -572,6 +592,7 @@ where
 
 pub struct IoOwnedDecoder<IO, HD> {
     framed: FramedRead<IO, HD>,
+    timeout: Option<Duration>,
 }
 
 impl<IO, HD> BorrowFramedRead for IoOwnedDecoder<IO, HD> {
@@ -584,9 +605,10 @@ impl<IO, HD> BorrowFramedRead for IoOwnedDecoder<IO, HD> {
 }
 
 impl<IO, HD: Default> IoOwnedDecoder<IO, HD> {
-    pub fn new(io: IO) -> Self {
+    pub fn new(io: IO, timeout: Option<Duration>) -> Self {
         Self {
             framed: FramedRead::new(io, HD::default()),
+            timeout: timeout,
         }
     }
 }
@@ -606,6 +628,22 @@ where
         Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, HttpError>;
 
     async fn next(&mut self) -> Option<Self::Item> {
+        match self.timeout {
+            Some(duration) => {
+                match monoio::time::timeout(duration, self.framed.peek_data()).await {
+                    Err(_) => {
+                        return Some(Err(DecodeError::TimedOut.into()));
+                    }
+                    Ok(Err(e)) => {
+                        return Some(Err(e.into()));
+                    }
+                    Ok(Ok(_)) => {
+                    }
+                }
+            }
+            None => {}
+        }
+
         match self.framed.next().await? {
             Err(e) => Some(Err(e)),
             Ok((header, decoder)) => Some(Ok(http::Response::from_parts(header, decoder))),
@@ -767,7 +805,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_request_without_body() {
         let io = mock! { Ok(b"GET /test HTTP/1.1\r\n\r\n".to_vec()) };
-        let mut decoder = RequestDecoder::new(io);
+        let mut decoder = RequestDecoder::new(io, None);
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.method(), Method::GET);
         assert!(matches!(req.body(), Payload::None));
@@ -776,7 +814,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_response_without_body() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\n\r\n".to_vec()) };
-        let mut decoder = ResponseDecoder::new(io);
+        let mut decoder = ResponseDecoder::new(io, None);
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.status(), StatusCode::OK);
         assert!(matches!(req.body(), Payload::None));
@@ -785,7 +823,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_fixed_body_request() {
         let io = mock! { Ok(b"POST /test HTTP/1.1\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
-        let mut decoder = RequestDecoder::new(io);
+        let mut decoder = RequestDecoder::new(io, None);
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.method(), Method::POST);
         assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
@@ -802,7 +840,7 @@ mod tests {
     #[monoio::test_all]
     async fn decode_fixed_body_response() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
-        let mut decoder = ResponseDecoder::new(io);
+        let mut decoder = ResponseDecoder::new(io, None);
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.status(), StatusCode::OK);
         assert_eq!(req.headers().get("test-key").unwrap(), "test-val");
@@ -820,7 +858,7 @@ mod tests {
     async fn decode_chunked_request() {
         let io = mock! { Ok(b"PUT /test HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n\
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
-        let mut decoder = RequestDecoder::new(io);
+        let mut decoder = RequestDecoder::new(io, None);
         let req = decoder.next().await.unwrap().unwrap();
         assert_eq!(req.method(), Method::PUT);
         let mut payload = match req.into_body() {
@@ -846,7 +884,7 @@ mod tests {
     async fn decode_chunked_response() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\nTransfer-encoDing: chunked\r\n\r\n\
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
-        let mut decoder = ResponseDecoder::new(io);
+        let mut decoder = ResponseDecoder::new(io, None);
         let resp = decoder.next().await.unwrap().unwrap();
         let mut payload = match resp.into_body() {
             Payload::Stream(p) => p,
