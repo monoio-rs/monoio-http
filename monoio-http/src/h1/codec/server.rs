@@ -1,3 +1,4 @@
+use std::time::Duration;
 use monoio::io::{
     sink::Sink, stream::Stream, AsyncReadRent, AsyncWriteRent, OwnedReadHalf, OwnedWriteHalf,
     Split, Splitable,
@@ -14,12 +15,12 @@ pub struct ServerCodec<IO: AsyncWriteRent> {
 }
 
 impl<IO: Split + AsyncReadRent + AsyncWriteRent> ServerCodec<IO> {
-    pub fn new(io: IO) -> Self {
+    pub fn new(io: IO, timeout: Option<Duration>) -> Self {
         // # Safety: Since we will not use the encoder and decoder at once, we can split it safely.
         let (r, w) = io.into_split();
         Self {
             encoder: GenericEncoder::new(w),
-            decoder: RequestDecoder::new(r),
+            decoder: RequestDecoder::new(r, timeout),
         }
     }
 }
