@@ -164,6 +164,7 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),

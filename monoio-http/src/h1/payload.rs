@@ -3,6 +3,7 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     io,
+    io::{Error, ErrorKind},
     rc::{Rc, Weak},
     task::Waker,
 };
@@ -34,6 +35,16 @@ pub enum PayloadError {
     Io(#[from] io::Error),
 }
 
+impl Clone for PayloadError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Io(e) => Self::Io(Error::new(ErrorKind::Other, e.to_string())),
+            _ => self.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Payload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
@@ -111,7 +122,7 @@ pub fn stream_payload_pair<D: IoBuf, E>() -> (StreamPayload<D, E>, StreamPayload
 }
 
 /// Fixed Payload
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixedPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
@@ -203,7 +214,7 @@ impl<D, E> FixedPayloadSender<D, E> {
 }
 
 /// Stream Payload
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,

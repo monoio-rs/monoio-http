@@ -22,7 +22,36 @@ impl<P> IntoParts for Request<P> {
     }
 }
 
+pub struct RequestForEncoder<'a, P = Payload> {
+    parts: &'a mut RequestHead,
+    body: P,
+}
+
+impl<'a, P> FromParts<&'a mut RequestHead, P> for RequestForEncoder<'a, P> {
+    fn from_parts(parts: &'a mut RequestHead, body: P) -> Self {
+        Self { parts, body }
+    }
+}
+
+impl<'a, P> IntoParts for RequestForEncoder<'a, P> {
+    type Parts = &'a mut RequestHead;
+    type Body = P;
+    fn into_parts(self) -> (Self::Parts, Self::Body) {
+        (self.parts, self.body)
+    }
+}
+
 impl BorrowHeaderMap for RequestHead {
+    fn header_map(&self) -> &http::HeaderMap {
+        &self.headers
+    }
+
+    fn header_map_mut(&mut self) -> &mut http::HeaderMap {
+        &mut self.headers
+    }
+}
+
+impl BorrowHeaderMap for &mut RequestHead {
     fn header_map(&self) -> &http::HeaderMap {
         &self.headers
     }
