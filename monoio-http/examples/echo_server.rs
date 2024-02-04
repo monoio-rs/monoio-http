@@ -37,7 +37,7 @@ async fn main() {
 async fn handle_connection(stream: TcpStream) {
     let (r, w) = stream.into_split();
     let sender = GenericEncoder::new(w);
-    let mut receiver = RequestDecoder::new(r, None);
+    let mut receiver = RequestDecoder::new(r);
     let (mut tx, rx) = spsc_pair();
     monoio::spawn(handle_task(rx, sender));
 
