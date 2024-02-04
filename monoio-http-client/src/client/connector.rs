@@ -87,7 +87,7 @@ impl<C: Default> Default for TlsConnector<C> {
     #[cfg(not(feature = "native-tls"))]
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
                 ta.subject,
                 ta.spki,
@@ -143,15 +143,12 @@ where
 {
     type Connection = TlsStream<C::Connection>;
     type Error = monoio_native_tls::TlsError;
-    type ConnectionFuture<'a> = impl Future<Output = Result<Self::Connection, Self::Error>> + 'a where Self: 'a, T: 'a;
 
-    fn connect(&self, key: T) -> Self::ConnectionFuture<'_> {
+    async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
         let server_name = key.param();
-        async move {
-            let stream = self.inner_connector.connect(key).await?;
-            let tls_stream = self.tls_connector.connect(&server_name.0, stream).await?;
-            Ok(tls_stream)
-        }
+
+        let stream = self.inner_connector.connect(key).await?;
+        self.tls_connector.connect(&server_name.0, stream).await
     }
 }
 
@@ -180,7 +177,7 @@ impl HttpConnector {
         };
 
         match proto {
-            Version::HTTP_11 => Ok(HttpConnection::H1(ClientCodec::new(io, None))),
+            Version::HTTP_11 => Ok(HttpConnection::H1(ClientCodec::new(io))),
             Version::HTTP_2 => {
                 let (send_request, h2_conn) = self.conn_config.h2_builder.handshake(io).await?;
                 monoio::spawn(async move {

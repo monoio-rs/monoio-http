@@ -29,7 +29,7 @@ async fn main() {
         .await
         .expect("unable to connect");
     // You can also use raw io with encoder and decoder manually.
-    let mut codec = ClientCodec::new(conn, None);
+    let mut codec = ClientCodec::new(conn);
 
     println!("Connected, will send request");
     codec
