@@ -1,3 +1,5 @@
+use std::io::{Error, ErrorKind};
+
 use thiserror::Error as ThisError;
 
 use crate::h1::{
@@ -17,4 +19,13 @@ pub enum HttpError {
     H2Error(#[from] crate::h2::Error),
     #[error("IO error {0}")]
     IOError(#[from] std::io::Error),
+}
+
+impl Clone for HttpError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::IOError(e) => Self::IOError(Error::new(ErrorKind::Other, e.to_string())),
+            _ => self.clone(),
+        }
+    }
 }

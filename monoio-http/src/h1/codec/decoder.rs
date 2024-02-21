@@ -33,6 +33,16 @@ use crate::{
 const MAX_HEADERS: usize = 96;
 
 #[derive(ThisError, Debug)]
+pub enum InvalidRequestError {
+    #[error("Invalid method error {0}")]
+    InvalidMethod(String),
+    #[error("Invalid uri error {0}")]
+    InvalidUri(String),
+    #[error("Invalid status error {0}")]
+    InvalidStatus(String),
+}
+
+#[derive(ThisError, Debug)]
 pub enum DecodeError {
     #[error("httparse error {0}")]
     Parse(#[from] httparse::Error),
@@ -52,6 +62,19 @@ pub enum DecodeError {
     UnexpectedEof,
     #[error("timeout error")]
     TimedOut,
+    #[error("invalid error {0}")]
+    Invalid(InvalidRequestError),
+}
+
+impl Clone for DecodeError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Method(e) => Self::Invalid(InvalidRequestError::InvalidMethod(e.to_string())),
+            Self::Uri(e) => Self::Invalid(InvalidRequestError::InvalidUri(e.to_string())),
+            Self::Status(e) => Self::Invalid(InvalidRequestError::InvalidStatus(e.to_string())),
+            _ => self.clone(),
+        }
+    }
 }
 
 /// NextDecoder maybe None, Fixed or Streamed.

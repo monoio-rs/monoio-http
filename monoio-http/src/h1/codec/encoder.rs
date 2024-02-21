@@ -29,6 +29,17 @@ pub enum EncodeError {
     Payload(#[from] PayloadError),
     #[error("io error {0}")]
     Io(#[from] io::Error),
+    #[error("payload error debug")]
+    InvalidPayload(String),
+}
+
+impl Clone for EncodeError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Payload(e) => Self::InvalidPayload(e.to_string()),
+            _ => self.clone(),
+        }
+    }
 }
 
 struct HeadEncoder;
@@ -53,15 +64,19 @@ impl HeadEncoder {
 impl Encoder<RequestHead> for HeadEncoder {
     type Error = io::Error;
 
-    fn encode(&mut self, item: RequestHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.encode(&item, dst)
+    fn encode(&mut self, mut item: RequestHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode(&mut item, dst)
     }
 }
 
-impl Encoder<&RequestHead> for HeadEncoder {
+impl Encoder<&mut RequestHead> for HeadEncoder {
     type Error = io::Error;
 
-    fn encode(&mut self, item: &RequestHead, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
+    fn encode(
+        &mut self,
+        item: &mut RequestHead,
+        dst: &mut bytes::BytesMut,
+    ) -> Result<(), Self::Error> {
         // TODO: magic number here
         dst.reserve(256 + item.headers.len() * AVERAGE_HEADER_SIZE);
         // put http method
@@ -232,8 +247,8 @@ enum Length {
 impl<T, R> Sink<R> for GenericEncoder<T>
 where
     T: AsyncWriteRent,
-    R::Parts: BorrowHeaderMap,
     R: IntoParts,
+    R::Parts: BorrowHeaderMap,
     R::Body: Body,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
