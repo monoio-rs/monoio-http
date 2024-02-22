@@ -9,6 +9,7 @@ use crate::h2::{
 };
 
 /// Either a Client or a Server
+#[allow(dead_code)]
 pub(crate) trait Peer {
     /// Message type polled from the transport
     type Poll: fmt::Debug;

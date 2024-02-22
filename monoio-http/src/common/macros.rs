@@ -1,10 +1,10 @@
 #[macro_export]
 macro_rules! impl_cookie_extractor {
-    ($struct:ident, $cookie_str:literal) => {
+    ($struct:ident, $orig_struct:ident, $cookie_str:literal) => {
         impl<P> $struct<P> {
             /// Builds a cookie jar from the $struct's headers.
-            pub fn build_cookie_jar(&mut self) -> Result<CookieJar, ExtractError> {
-                let headers = self.inner.headers();
+            fn build_cookie_jar(r: &$orig_struct<P>) -> Result<CookieJar, ExtractError> {
+                let headers = r.headers();
                 let mut jar = CookieJar::new();
 
                 if let Some(cookie_header) = headers.get($cookie_str) {
@@ -12,7 +12,6 @@ macro_rules! impl_cookie_extractor {
                         .to_str()
                         .map_err(|_| ExtractError::InvalidHeaderValue)?;
                     let cookie_owned_str = cookie_str.to_string();
-                    println!("{}", cookie_owned_str);
                     for cookie in Cookie::split_parse(cookie_owned_str) {
                         let cookie = cookie?;
                         jar.add_original(cookie);
@@ -22,14 +21,20 @@ macro_rules! impl_cookie_extractor {
                 Ok(jar)
             }
 
-            /// Parse cookies from the $struct. This will overwrite any existing cookies in the
-            /// cookie jar. If you want to add cookies to the jar, use `add_cookie` or
-            /// `add_original_cookie`. Lazy parsing is used, so the cookies are only parsed when
-            /// this method is called.
-            pub fn parse_cookies_from_header(&mut self) -> Result<(), HttpError> {
-                let jar = self.build_cookie_jar()?;
-                self.cookie_jar = Some(jar);
-                Ok(())
+            /// Parse cookies from the $orig_struct's headers and return a new $struct.
+            /// Returns the original $orig_struct if the cookie header is invalid.
+            pub fn parse_cookies_params(
+                r: $orig_struct<P>,
+            ) -> Result<Self, ($orig_struct<P>, HttpError)> {
+                let jar = match Self::build_cookie_jar(&r) {
+                    Ok(jar) => jar,
+                    Err(e) => return Err((r, e.into())),
+                };
+                Ok(Self {
+                    inner: r,
+                    cookie_jar: Some(jar),
+                    url_params: None,
+                })
             }
 
             /// Sets a cookie in the cookie jar.
@@ -79,11 +84,9 @@ macro_rules! impl_cookie_extractor {
                 self.cookie_jar.as_ref()
             }
 
-            /// Returns an error if the cookie jar is not initialized via
-            /// `parse_cookies_from_header`. Overwrites the `Cookie` header in the $struct with
-            /// the cookies from the cookie jar. User should call this method before splitting
-            /// the $struct into parts, or any changes to the cookie jar will not be reflected
-            /// in the $struct.
+            /// Overwrites the `Cookie` header in the $orig_struct inside the $struct.
+            /// Alternatively just call into_http_request to get the original $orig_struct with
+            /// the updated cookie header.
             pub fn serialize_cookies_into_header(&mut self) -> Result<(), HttpError> {
                 match self.cookie_jar.as_ref() {
                     Some(jar) => {

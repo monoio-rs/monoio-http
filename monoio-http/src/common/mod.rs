@@ -2,8 +2,11 @@ use bytes::Bytes;
 pub mod body;
 pub mod error;
 pub mod ext;
+pub mod parsed_request;
+pub mod parsed_response;
 pub mod request;
 pub mod response;
+
 #[macro_use]
 pub(crate) mod macros;
 

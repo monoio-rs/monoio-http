@@ -34,6 +34,7 @@ pub enum PayloadError {
     Io(#[from] io::Error),
 }
 
+#[derive(Debug)]
 pub enum Payload<D = Bytes, E = HttpError>
 where
     D: IoBuf,

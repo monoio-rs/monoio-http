@@ -307,7 +307,6 @@ mod test {
     use http::*;
 
     use super::*;
-    use crate::h2::hpack::Header;
 
     #[test]
     fn test_encode_method_get() {

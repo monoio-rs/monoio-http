@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     io,
     task::{Context, Poll, Waker},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use http::{HeaderMap, Request, Response};
@@ -11,8 +11,8 @@ use monoio::io::AsyncWriteRent;
 use super::*;
 use crate::h2::{
     codec::UserError,
-    frame::{self, PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE},
-    proto::{self, Error},
+    frame::{PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE},
+    proto::{self},
 };
 
 #[derive(Debug)]

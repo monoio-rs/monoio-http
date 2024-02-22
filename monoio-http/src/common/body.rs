@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 
 use super::error::HttpError;
 use crate::{
-    common::{request::Request, response::Response, FromParts, IntoParts},
+    common::{request::Request, response::Response},
     h1::payload::Payload,
     h2::RecvStream,
 };
@@ -171,6 +171,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
