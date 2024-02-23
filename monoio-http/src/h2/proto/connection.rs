@@ -6,14 +6,13 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures_core::Stream;
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
 
 use crate::h2::{
     client,
     codec::UserError,
-    frame,
     frame::{Reason, StreamId, DEFAULT_INITIAL_WINDOW_SIZE},
     proto::*,
     server,

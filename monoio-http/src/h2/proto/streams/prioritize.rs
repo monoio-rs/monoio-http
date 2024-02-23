@@ -4,13 +4,13 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use bytes::buf::{Buf, Take};
+use bytes::buf::Take;
 use monoio::io::AsyncWriteRent;
 
 use super::{store::Resolve, *};
 use crate::h2::{
     codec::{UserError, UserError::*},
-    frame::{Reason, StreamId},
+    frame::Reason,
 };
 
 /// # Warning

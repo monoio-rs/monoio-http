@@ -8,6 +8,18 @@ use crate::h1::{
 };
 
 #[derive(ThisError, Debug)]
+pub enum ExtractError {
+    #[error("Uninitialized cookie jar")]
+    UninitializedCookieJar,
+    #[error("http cookie parsing error {0}")]
+    CookieParseError(#[from] cookie::ParseError),
+    #[error("Invalid Header Value")]
+    InvalidHeaderValue,
+    #[error("Invalid content type")]
+    InvalidContentType,
+}
+
+#[derive(ThisError, Debug)]
 pub enum HttpError {
     #[error("http1 Encode error {0}")]
     H1EncodeError(#[from] EncodeError),
@@ -19,6 +31,10 @@ pub enum HttpError {
     H2Error(#[from] crate::h2::Error),
     #[error("IO error {0}")]
     IOError(#[from] std::io::Error),
+    #[error("Cookie error {0}")]
+    CookieError(#[from] ExtractError),
+    #[error("SerDe error")]
+    SerDeError,
 }
 
 impl Clone for HttpError {

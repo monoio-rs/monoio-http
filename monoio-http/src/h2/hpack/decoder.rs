@@ -828,7 +828,6 @@ pub fn get_static(idx: usize) -> Header {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::h2::hpack::Header;
 
     #[test]
     fn test_peek_u8() {

@@ -35,16 +35,7 @@ pub enum PayloadError {
     Io(#[from] io::Error),
 }
 
-impl Clone for PayloadError {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Io(e) => Self::Io(Error::new(ErrorKind::Other, e.to_string())),
-            _ => self.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Payload<D = Bytes, E = HttpError>
 where
     D: IoBuf,

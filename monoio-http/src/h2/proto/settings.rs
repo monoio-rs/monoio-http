@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 
 use monoio::io::AsyncWriteRent;
 
-use crate::h2::{codec::UserError, error::Reason, frame, proto::*};
+use crate::h2::{codec::UserError, error::Reason, proto::*};
 
 #[derive(Debug)]
 pub(crate) struct Settings {

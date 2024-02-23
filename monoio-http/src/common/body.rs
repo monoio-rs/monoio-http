@@ -1,4 +1,7 @@
-use std::io::{Cursor, Read};
+use std::{
+    collections::HashMap,
+    io::{Cursor, Read},
+};
 
 use bytes::{Bytes, BytesMut};
 use flate2::{
@@ -6,12 +9,16 @@ use flate2::{
     Compression,
 };
 use futures_core::Future;
-use http::Response;
 use monoio::buf::IoBuf;
+use multipart::server::Multipart;
 use smallvec::SmallVec;
 
 use super::error::HttpError;
-use crate::{common::request::Request, h1::payload::Payload, h2::RecvStream};
+use crate::{
+    common::{request::Request, response::Response},
+    h1::payload::Payload,
+    h2::RecvStream,
+};
 
 const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "br", "deflate"];
 
@@ -164,7 +171,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
@@ -241,4 +248,34 @@ impl FixedBody for HttpBody {
     fn fixed_body(data: Option<Bytes>) -> Self {
         Self::Ready(data)
     }
+}
+
+pub async fn parse_body_url_encoded<B>(body: B) -> Result<HashMap<String, String>, B::Error>
+where
+    B: Body<Data = Bytes, Error = HttpError> + FixedBody,
+{
+    let data = body.bytes().await?;
+    let mut params = HashMap::new();
+    let params = serde_urlencoded::from_bytes::<HashMap<String, String>>(&data)
+        .map_err(|_| HttpError::SerDeError)
+        .map(|p| {
+            params.extend(p);
+            params
+        })?;
+
+    Ok(params)
+}
+
+pub async fn parse_body_multipart<B>(
+    body: B,
+    boundary: String,
+) -> Result<Multipart<Cursor<Bytes>>, B::Error>
+where
+    B: Body<Data = Bytes, Error = HttpError> + FixedBody,
+{
+    let data = body.bytes().await?;
+    Ok(multipart::server::Multipart::with_body(
+        Cursor::new(data),
+        boundary,
+    ))
 }
