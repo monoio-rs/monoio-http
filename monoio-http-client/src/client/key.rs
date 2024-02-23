@@ -141,7 +141,13 @@ impl TryFrom<&Uri> for Key {
         let port = uri.port_u16().unwrap_or(default_port);
 
         let host = match uri.host() {
-            Some(a) => a,
+            Some(a) => {
+                if a.starts_with('[') && a.ends_with(']') {
+                    &a[1..a.len() - 1]
+                } else {
+                    a
+                }
+            }
             None => return Err(FromUriError::NoAuthority),
         };
         let sni = if tls { Some(host) } else { None };

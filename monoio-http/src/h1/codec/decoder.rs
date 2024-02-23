@@ -1,4 +1,7 @@
-use std::{borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData};
+use std::{
+    borrow::Cow, future::Future, hint::unreachable_unchecked, io, marker::PhantomData,
+    time::Duration,
+};
 
 use bytes::{Buf, Bytes};
 use http::{
@@ -30,6 +33,16 @@ use crate::{
 const MAX_HEADERS: usize = 96;
 
 #[derive(ThisError, Debug)]
+pub enum InvalidRequestError {
+    #[error("Invalid method error {0}")]
+    InvalidMethod(String),
+    #[error("Invalid uri error {0}")]
+    InvalidUri(String),
+    #[error("Invalid status error {0}")]
+    InvalidStatus(String),
+}
+
+#[derive(ThisError, Debug)]
 pub enum DecodeError {
     #[error("httparse error {0}")]
     Parse(#[from] httparse::Error),
@@ -47,6 +60,21 @@ pub enum DecodeError {
     Io(#[from] io::Error),
     #[error("unexpected eof")]
     UnexpectedEof,
+    #[error("timeout error")]
+    TimedOut,
+    #[error("invalid error {0}")]
+    Invalid(InvalidRequestError),
+}
+
+impl Clone for DecodeError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Method(e) => Self::Invalid(InvalidRequestError::InvalidMethod(e.to_string())),
+            Self::Uri(e) => Self::Invalid(InvalidRequestError::InvalidUri(e.to_string())),
+            Self::Status(e) => Self::Invalid(InvalidRequestError::InvalidStatus(e.to_string())),
+            _ => self.clone(),
+        }
+    }
 }
 
 /// NextDecoder maybe None, Fixed or Streamed.
@@ -451,17 +479,31 @@ where
 pub struct GenericDecoder<IO, HD> {
     framed: FramedRead<IO, HD>,
     next_decoder: NextDecoder<FixedBodyDecoder, ChunkedBodyDecoder, Bytes>,
+    timeout: Option<Duration>,
 }
 
-impl<IO, HD> GenericDecoder<IO, HD>
-where
-    HD: Default,
-{
+impl<IO, HD: Default> GenericDecoder<IO, HD> {
     pub fn new(io: IO) -> Self {
         Self {
             framed: FramedRead::new(io, HD::default()),
             next_decoder: NextDecoder::default(),
+            timeout: None,
         }
+    }
+
+    pub fn new_with_timeout(io: IO, timeout: Duration) -> Self {
+        Self {
+            framed: FramedRead::new(io, HD::default()),
+            next_decoder: NextDecoder::default(),
+            timeout: Some(timeout),
+        }
+    }
+}
+
+impl<IO, HD> GenericDecoder<IO, HD> {
+    #[inline]
+    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
+        self.timeout = timeout;
     }
 }
 
@@ -559,6 +601,18 @@ where
             }
         }
 
+        if let Some(duration) = self.timeout {
+            match monoio::time::timeout(duration, self.framed.peek_data()).await {
+                Err(_) => {
+                    return Some(Err(DecodeError::TimedOut.into()));
+                }
+                Ok(Err(e)) => {
+                    return Some(Err(e.into()));
+                }
+                Ok(Ok(_)) => {}
+            }
+        }
+
         match self.framed.next().await {
             None => None,
             Some(Ok((item, next_decoder))) => {
@@ -572,22 +626,41 @@ where
 
 pub struct IoOwnedDecoder<IO, HD> {
     framed: FramedRead<IO, HD>,
+    timeout: Option<Duration>,
 }
 
 impl<IO, HD> BorrowFramedRead for IoOwnedDecoder<IO, HD> {
     type IO = IO;
     type Codec = HD;
 
+    #[inline]
     fn framed_mut(&mut self) -> &mut FramedRead<Self::IO, Self::Codec> {
         &mut self.framed
     }
 }
 
 impl<IO, HD: Default> IoOwnedDecoder<IO, HD> {
+    #[inline]
     pub fn new(io: IO) -> Self {
         Self {
             framed: FramedRead::new(io, HD::default()),
+            timeout: None,
         }
+    }
+
+    #[inline]
+    pub fn new_with_timeout(io: IO, timeout: Duration) -> Self {
+        Self {
+            framed: FramedRead::new(io, HD::default()),
+            timeout: Some(timeout),
+        }
+    }
+}
+
+impl<IO, HD> IoOwnedDecoder<IO, HD> {
+    #[inline]
+    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
+        self.timeout = timeout;
     }
 }
 
@@ -606,6 +679,18 @@ where
         Result<http::Response<PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder>>, HttpError>;
 
     async fn next(&mut self) -> Option<Self::Item> {
+        if let Some(duration) = self.timeout {
+            match monoio::time::timeout(duration, self.framed.peek_data()).await {
+                Err(_) => {
+                    return Some(Err(DecodeError::TimedOut.into()));
+                }
+                Ok(Err(e)) => {
+                    return Some(Err(e.into()));
+                }
+                Ok(Ok(_)) => {}
+            }
+        }
+
         match self.framed.next().await? {
             Err(e) => Some(Err(e)),
             Ok((header, decoder)) => Some(Ok(http::Response::from_parts(header, decoder))),
@@ -614,6 +699,7 @@ where
 }
 
 impl PayloadDecoder<FixedBodyDecoder, ChunkedBodyDecoder> {
+    #[inline]
     pub fn with_io<IO>(self, next_with: IO) -> FramedPayload<IO> {
         FramedPayload::new(next_with, self)
     }
@@ -653,14 +739,11 @@ mod tests {
     #[test]
     fn decode_request_header() {
         let mut data = BytesMut::from("GET /test HTTP/1.1\r\n\r\n");
-        if let Decoded::Some(head) = RequestHeadDecoder.decode(&mut data).unwrap() {
-            assert_eq!(head.method, Method::GET);
-            assert_eq!(head.version, Version::HTTP_11);
-            assert_eq!(head.uri, "/test");
-            assert!(data.is_empty());
-        } else {
-            assert!(false);
-        }
+        let head = RequestHeadDecoder.decode(&mut data).unwrap().unwrap();
+        assert_eq!(head.method, Method::GET);
+        assert_eq!(head.version, Version::HTTP_11);
+        assert_eq!(head.uri, "/test");
+        assert!(data.is_empty());
     }
 
     #[test]
@@ -679,17 +762,13 @@ mod tests {
     #[test]
     fn decode_response_header() {
         let mut data = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Type:application/json\r\n\r\n");
-        if let Decoded::Some(head) = ResponseHeadDecoder.decode(&mut data).unwrap() {
-            assert_eq!(head.status, StatusCode::OK);
-            assert_eq!(head.version, Version::HTTP_11);
-            assert_eq!(
-                head.headers.get(http::header::CONTENT_TYPE),
-                Some(&HeaderValue::from_static("application/json"))
-            );
-            assert!(data.is_empty());
-        } else {
-            assert!(false)
-        }
+        let head = ResponseHeadDecoder.decode(&mut data).unwrap().unwrap();
+        assert_eq!(head.status, StatusCode::OK);
+        assert_eq!(head.version, Version::HTTP_11);
+        assert_eq!(
+            head.headers.get(http::header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/json"))
+        );
     }
 
     #[test]
@@ -711,48 +790,31 @@ mod tests {
         let mut data = BytesMut::from("balabalabalabala");
         let mut decoder = FixedBodyDecoder(8);
 
-        if let Decoded::Some(head) = decoder.decode(&mut data).unwrap() {
-            assert_eq!(&head, &"balabala");
-            assert_eq!(data.len(), 8);
-        } else {
-            assert!(false);
-        }
+        let head = decoder.decode(&mut data).unwrap().unwrap();
+        assert_eq!(&head, &"balabala");
+        assert_eq!(data.len(), 8);
     }
 
     #[test]
     fn decode_chunked_body() {
         let mut data = BytesMut::from("a\r\n0000000000\r\n1\r\nx\r\n0\r\n\r\n");
         let mut decoder = ChunkedBodyDecoder::default();
-        match decoder.decode(&mut data).unwrap() {
-            Decoded::Some(Some(data)) => {
-                assert_eq!(&data, &"0000000000");
-            }
-            _ => assert!(false),
-        }
-        match decoder.decode(&mut data).unwrap() {
-            Decoded::Some(Some(data)) => {
-                assert_eq!(&data, &"x");
-            }
-            _ => assert!(false),
-        }
-        match decoder.decode(&mut data).unwrap() {
-            Decoded::Some(data) => {
-                assert!(data.is_none());
-            }
-            _ => assert!(false),
-        }
+        assert_eq!(
+            decoder.decode(&mut data).unwrap().unwrap().unwrap(),
+            "0000000000"
+        );
+        assert_eq!(decoder.decode(&mut data).unwrap().unwrap().unwrap(), "x");
+        assert!(decoder.decode(&mut data).unwrap().unwrap().is_none());
     }
 
     #[test]
     fn decode_too_big_chunked_body() {
         let mut data = BytesMut::from("a\r\n0000000000\r\ndeadbeefcafebabe0\r\nx\r\n0\r\n\r\n");
         let mut decoder = ChunkedBodyDecoder::default();
-        match decoder.decode(&mut data).unwrap() {
-            Decoded::Some(Some(data)) => {
-                assert_eq!(&data, &"0000000000");
-            }
-            _ => assert!(false),
-        }
+        assert_eq!(
+            decoder.decode(&mut data).unwrap().unwrap().unwrap(),
+            "0000000000"
+        );
         assert!(&decoder.decode(&mut data).is_err());
     }
 

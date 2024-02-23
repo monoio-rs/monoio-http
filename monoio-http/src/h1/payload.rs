@@ -3,6 +3,7 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     io,
+    io::{Error, ErrorKind},
     rc::{Rc, Weak},
     task::Waker,
 };
@@ -112,7 +113,7 @@ pub fn stream_payload_pair<D: IoBuf, E>() -> (StreamPayload<D, E>, StreamPayload
 }
 
 /// Fixed Payload
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixedPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,
@@ -204,7 +205,7 @@ impl<D, E> FixedPayloadSender<D, E> {
 }
 
 /// Stream Payload
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamPayload<D = Bytes, E = HttpError>
 where
     D: IoBuf,

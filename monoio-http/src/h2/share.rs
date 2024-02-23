@@ -142,6 +142,7 @@ impl From<StreamId> for u32 {
 /// [`FlowControl`]: struct.FlowControl.html
 /// [`Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
 #[must_use = "streams do nothing unless polled"]
+#[derive(Clone)]
 pub struct RecvStream {
     inner: FlowControl,
 }

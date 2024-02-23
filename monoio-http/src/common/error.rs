@@ -1,3 +1,5 @@
+use std::io::{Error, ErrorKind};
+
 use thiserror::Error as ThisError;
 
 use crate::h1::{
@@ -33,4 +35,13 @@ pub enum HttpError {
     CookieError(#[from] ExtractError),
     #[error("SerDe error")]
     SerDeError,
+}
+
+impl Clone for HttpError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::IOError(e) => Self::IOError(Error::new(ErrorKind::Other, e.to_string())),
+            _ => self.clone(),
+        }
+    }
 }
