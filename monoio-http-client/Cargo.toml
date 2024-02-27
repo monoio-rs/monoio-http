@@ -8,7 +8,7 @@ description = "Http client for Monoio."
 edition = "2021"
 license = "MIT/Apache-2.0"
 name = "monoio-http-client"
-version = "0.3.1"
+version = "0.3.2"
 
 [dependencies]
 monoio = { workspace = true }
