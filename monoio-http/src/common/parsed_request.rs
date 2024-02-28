@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor};
+use std::{collections::HashMap, hint::unreachable_unchecked, io::Cursor};
 
 use bytes::Bytes;
 use cookie::Cookie; // Import the Cookie type from the cookie crate
@@ -10,17 +10,40 @@ use super::{
     body::{Body, FixedBody},
     error::{ExtractError, HttpError},
     request::Request,
+    Parse,
 };
 use crate::{common::IntoParts, impl_cookie_extractor};
+
+// TODO: use more efficient impl.
+type QueryMap = HashMap<String, String>;
 
 #[derive(Clone)]
 pub struct ParsedRequest<P> {
     inner: Request<P>,
-    cookie_jar: Option<CookieJar>,
-    url_params: Option<HashMap<String, String>>,
+    cookie_jar: Parse<CookieJar>,
+    url_params: Parse<QueryMap>,
+}
+
+impl<P> From<Request<P>> for ParsedRequest<P> {
+    #[inline]
+    fn from(value: Request<P>) -> Self {
+        Self {
+            inner: value,
+            cookie_jar: Parse::Unparsed,
+            url_params: Parse::Unparsed,
+        }
+    }
 }
 
 impl<P> ParsedRequest<P> {
+    pub fn new(req: Request<P>) -> Self {
+        Self {
+            inner: req,
+            cookie_jar: Parse::Unparsed,
+            url_params: Parse::Unparsed,
+        }
+    }
+
     pub fn into_http_request(mut self) -> Result<Request<P>, HttpError> {
         self.serialize_cookies_into_header()?;
         Ok(self.inner)
@@ -45,29 +68,50 @@ impl<P> IntoParts for ParsedRequest<P> {
     type Parts = RequestHead;
     type Body = P;
     fn into_parts(self) -> (Self::Parts, Self::Body) {
+        // TODO(fix): write cached kv back
         self.inner.into_parts()
     }
 }
 
 // URI parsing methods
 impl<P> ParsedRequest<P> {
-    pub fn parse_url_params(req: Request<P>) -> Result<Self, (Request<P>, HttpError)> {
-        let url = req.uri();
-        let query = url.query().unwrap_or("");
-        let params = match serde_urlencoded::from_str(query) {
-            Ok(params) => params,
-            Err(_e) => return Err((req, HttpError::SerDeError)),
-        };
-
-        Ok(Self {
-            inner: req,
-            cookie_jar: None,
-            url_params: Some(params),
+    pub fn parse_url_params(&mut self) -> Result<&QueryMap, HttpError> {
+        let uri = self.inner.uri();
+        if let Some(query) = uri.query() {
+            let parsed = serde_urlencoded::from_str(query).map_err(|e| {
+                self.url_params = Parse::Failed;
+                e
+            })?;
+            self.url_params = Parse::Parsed(parsed);
+        } else {
+            self.url_params = Parse::Parsed(Default::default());
+        }
+        Ok(match &self.url_params {
+            Parse::Parsed(inner) => inner,
+            _ => unsafe { unreachable_unchecked() },
         })
     }
 
-    pub fn get_url_param(&self, name: &str) -> Option<&String> {
-        self.url_params.as_ref().and_then(|params| params.get(name))
+    #[inline]
+    pub fn get_url_param(&mut self, name: &str) -> Option<&String> {
+        match self.url_params {
+            Parse::Parsed(ref map) => map.get(name),
+            Parse::Failed => None,
+            Parse::Unparsed => match self.parse_url_params() {
+                Ok(map) => map.get(name),
+                Err(_) => None,
+            },
+        }
+    }
+
+    #[inline]
+    pub fn url_params(&self) -> &Parse<QueryMap> {
+        &self.url_params
+    }
+
+    #[inline]
+    pub fn url_params_mut(&mut self) -> &mut Parse<QueryMap> {
+        &mut self.url_params
     }
 }
 
@@ -88,7 +132,7 @@ where
             let content_type_str = content_type
                 .to_str()
                 .ok()
-                .and_then(|s| s.split(";").next())
+                .and_then(|s| s.split(';').next())
                 .unwrap_or_default();
 
             if content_type_str == "multipart/form-data" {
@@ -118,7 +162,7 @@ where
             let content_type_str = content_type
                 .to_str()
                 .ok()
-                .and_then(|s| s.split(";").next())
+                .and_then(|s| s.split(';').next())
                 .unwrap_or_default();
             if content_type_str == "application/x-www-form-urlencoded" {
                 super::body::parse_body_url_encoded(req.into_body())
@@ -159,8 +203,7 @@ mod tests {
 
     fn build_request() -> Request<HttpBody> {
         let body = HttpBody::fixed_body(None);
-        let request = Request::new(body);
-        request
+        Request::new(body)
     }
 
     #[test]
@@ -228,14 +271,11 @@ mod tests {
     #[test]
     fn test_request_url_params_parse() {
         let request = create_request_with_url_params();
-        let parsed_req = ParsedRequest::parse_url_params(request).unwrap();
+        let mut parsed = ParsedRequest::new(request);
 
+        assert_eq!(parsed.get_url_param("user_id"), Some(&"123".to_string()));
         assert_eq!(
-            parsed_req.get_url_param("user_id"),
-            Some(&"123".to_string())
-        );
-        assert_eq!(
-            parsed_req.get_url_param("email"),
+            parsed.get_url_param("email"),
             Some(&"some_email".to_string())
         );
     }
@@ -244,7 +284,7 @@ mod tests {
         // let url_str = "https://example.com/api";
         let form_data = vec![("key1", "value1"), ("key2", "value2")];
 
-        let body = serde_urlencoded::to_string(&form_data).expect("Failed to serialize form data");
+        let body = serde_urlencoded::to_string(form_data).expect("Failed to serialize form data");
         let mut request = Request::new(HttpBody::fixed_body(Some(Bytes::from(body))));
         request.headers_mut().insert(
             http::header::CONTENT_TYPE,

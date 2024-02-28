@@ -3,7 +3,6 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     io,
-    io::{Error, ErrorKind},
     rc::{Rc, Weak},
     task::Waker,
 };
@@ -361,9 +360,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, io, time::Duration};
-
-    use bytes::Bytes;
+    use std::{convert::Infallible, time::Duration};
 
     use super::*;
 

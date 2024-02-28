@@ -128,13 +128,10 @@ impl Store {
     where
         F: FnMut(Ptr),
     {
-        match self.try_for_each(|ptr| {
+        let _ = self.try_for_each(|ptr| {
             f(ptr);
             Ok::<_, Infallible>(())
-        }) {
-            Ok(()) => (),
-            Err(infallible) => match infallible {},
-        }
+        });
     }
 
     pub fn try_for_each<F, E>(&mut self, mut f: F) -> Result<(), E>

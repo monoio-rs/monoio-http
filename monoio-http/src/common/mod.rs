@@ -26,3 +26,35 @@ pub trait BorrowHeaderMap {
     fn header_map(&self) -> &http::HeaderMap;
     fn header_map_mut(&mut self) -> &mut http::HeaderMap;
 }
+
+#[derive(Default, Debug, Clone, Copy)]
+pub enum Parse<T> {
+    Parsed(T),
+    Failed,
+    #[default]
+    Unparsed,
+}
+
+impl<T> Parse<T> {
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Parse::Unparsed;
+    }
+
+    #[inline]
+    pub fn set(&mut self, value: T) {
+        *self = Parse::Parsed(value);
+    }
+
+    #[inline]
+    pub fn is_unparsed(&self) -> bool {
+        matches!(self, Parse::Unparsed)
+    }
+}
+
+impl<T: Default> Parse<T> {
+    #[inline]
+    pub fn set_default(&mut self) {
+        *self = Parse::Parsed(T::default());
+    }
+}
