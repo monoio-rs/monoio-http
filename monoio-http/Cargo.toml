@@ -26,6 +26,7 @@ cookie = { version = "0.18.0", features = ["percent-encode"] }
 serde_urlencoded = "0.7"
 multipart = "0.18"
 mime = "0.3"
+multer = "3.0.0"
 
 httparse = "1"
 memchr = "2.5"
