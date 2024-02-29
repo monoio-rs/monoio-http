@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use bytes::Bytes;
+
 pub mod body;
 pub mod error;
 pub mod ext;
@@ -26,6 +29,8 @@ pub trait BorrowHeaderMap {
     fn header_map(&self) -> &http::HeaderMap;
     fn header_map_mut(&mut self) -> &mut http::HeaderMap;
 }
+
+type QueryMap = HashMap<String, String>;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Parse<T> {

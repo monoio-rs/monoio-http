@@ -1,10 +1,11 @@
 #[macro_export]
 macro_rules! impl_cookie_extractor {
-    ($struct:ident, $orig_struct:ident, $cookie_str:literal) => {
+    ($struct:ident, $cookie_str:literal) => {
         impl<P> $struct<P> {
             /// Builds a cookie jar from the $struct's headers.
-            fn build_cookie_jar(r: &$orig_struct<P>) -> Result<CookieJar, ExtractError> {
-                let headers = r.headers();
+            fn build_cookie_jar(
+                headers: &HeaderMap<HeaderValue>,
+            ) -> Result<CookieJar, ExtractError> {
                 let mut jar = CookieJar::new();
 
                 if let Some(cookie_header) = headers.get($cookie_str) {
@@ -21,75 +22,61 @@ macro_rules! impl_cookie_extractor {
                 Ok(jar)
             }
 
-            /// Parse cookies from the $orig_struct's headers and return a new $struct.
-            /// Returns the original $orig_struct if the cookie header is invalid.
-            pub fn parse_cookies_params(
-                r: $orig_struct<P>,
-            ) -> Result<Self, ($orig_struct<P>, HttpError)> {
-                let jar = match Self::build_cookie_jar(&r) {
-                    Ok(jar) => jar,
-                    Err(e) => return Err((r, e.into())),
-                };
-                Ok(Self {
-                    inner: r,
-                    cookie_jar: Some(jar),
-                    url_params: None,
-                })
-            }
-
-            /// Sets a cookie in the cookie jar.
-            fn set_cookie(
-                &mut self,
-                cookie: &Cookie<'static>,
-                original: bool,
-            ) -> Result<(), HttpError> {
-                match self.cookie_jar.as_mut() {
-                    Some(jar) => {
-                        if original {
-                            jar.add_original(cookie.clone());
-                        } else {
-                            jar.add(cookie.clone());
-                        }
-                        Ok(())
+            /// Parse cookies in the headers and return the cookiejar
+            pub fn parse_cookies_params(&mut self) -> Result<&CookieJar, HttpError> {
+                match Self::build_cookie_jar(&self.inner.headers()) {
+                    Ok(jar) => {
+                        self.cookie_jar = Parse::Parsed(jar);
                     }
-                    None => Err(ExtractError::UninitializedCookieJar.into()),
+                    Err(e) => return Err(e.into()),
                 }
+
+                Ok(match &self.cookie_jar {
+                    Parse::Parsed(jar) => jar,
+                    _ => unsafe { unreachable_unchecked() },
+                })
             }
 
             /// Adds a cookie to the cookie jar.
             pub fn add_cookie(&mut self, cookie: &Cookie<'static>) -> Result<(), HttpError> {
-                self.set_cookie(cookie, false)
-            }
-
-            /// Adds an original cookie to the cookie jar.
-            pub fn add_original_cookie(
-                &mut self,
-                cookie: &Cookie<'static>,
-            ) -> Result<(), HttpError> {
-                self.set_cookie(cookie, true)
+                match self.cookie_jar {
+                    Parse::Parsed(ref mut jar) => {
+                        jar.add(cookie.clone());
+                        Ok(())
+                    }
+                    _ => return Err(ExtractError::UninitializedCookieJar.into()),
+                }
             }
 
             /// Returns the cookie struct from the cookie jar by name.
             pub fn get_cookie(&self, name: &str) -> Option<&Cookie> {
-                self.cookie_jar.as_ref().and_then(|jar| jar.get(name))
+                match self.cookie_jar {
+                    Parse::Parsed(ref jar) => jar.get(name),
+                    _ => None,
+                }
             }
 
             /// Returns the value of the cookie from the cookie jar by name.
             pub fn get_cookie_value(&self, name: &str) -> Option<&str> {
-                self.get_cookie(name).map(|cookie| cookie.value())
+                match self.cookie_jar {
+                    Parse::Parsed(ref jar) => jar.get(name).map(|c| c.value()),
+                    _ => None,
+                }
             }
 
             /// Returns the cookie jar from the $struct.
             pub fn get_cookie_jar(&self) -> Option<&CookieJar> {
-                self.cookie_jar.as_ref()
+                match self.cookie_jar {
+                    Parse::Parsed(ref jar) => Some(jar),
+                    _ => None,
+                }
             }
 
-            /// Overwrites the `Cookie` header in the $orig_struct inside the $struct.
-            /// Alternatively just call into_http_request to get the original $orig_struct with
-            /// the updated cookie header.
+            /// Overwrites the `Cookie` header with the latest contents of the cookieJar.
+            /// Converting to Request or Response will automatically call this method.
             pub fn serialize_cookies_into_header(&mut self) -> Result<(), HttpError> {
-                match self.cookie_jar.as_ref() {
-                    Some(jar) => {
+                match self.cookie_jar {
+                    Parse::Parsed(ref jar) => {
                         let cookies = jar
                             .iter()
                             .map(|cookie| cookie.encoded().to_string())
@@ -102,7 +89,7 @@ macro_rules! impl_cookie_extractor {
                         self.inner.headers_mut().insert($cookie_str, header_value);
                         Ok(())
                     }
-                    None => Err(ExtractError::UninitializedCookieJar.into()),
+                    _ => Err(ExtractError::UninitializedCookieJar.into()),
                 }
             }
         }
