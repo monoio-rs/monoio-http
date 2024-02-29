@@ -61,6 +61,30 @@ impl HeadEncoder {
             }
         }
     }
+
+    #[inline]
+    fn write_headers(headers: &http::HeaderMap<http::HeaderValue>, dst: &mut BytesMut) {
+        if !headers.contains_key(http::header::CONTENT_LENGTH)
+            && !headers.contains_key(http::header::TRANSFER_ENCODING)
+        {
+            // fast path
+            for (name, value) in headers.iter() {
+                dst.extend_from_slice(name.as_ref());
+                dst.extend_from_slice(b": ");
+                dst.extend_from_slice(value.as_ref());
+                dst.extend_from_slice(b"\r\n");
+            }
+        } else {
+            for (name, value) in headers.iter().filter(|(name, _)| {
+                *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
+            }) {
+                dst.extend_from_slice(name.as_ref());
+                dst.extend_from_slice(b": ");
+                dst.extend_from_slice(value.as_ref());
+                dst.extend_from_slice(b"\r\n");
+            }
+        }
+    }
 }
 
 impl Encoder<RequestHead> for HeadEncoder {
@@ -135,16 +159,8 @@ impl Encoder<(&http::Method, &http::Uri, http::Version, &http::HeaderMap)> for H
         // put content length or transfor encoding
         // note: should remote these headers if cannot guarantee these 2 header not exist.
         self.write_length(dst);
-
         // put headers
-        for (name, value) in headers.iter().filter(|(name, _)| {
-            *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
-        }) {
-            dst.extend_from_slice(name.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_ref());
-            dst.extend_from_slice(b"\r\n");
-        }
+        Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
         Ok(())
     }
@@ -259,16 +275,8 @@ impl
         // put content length or transfor encoding
         // note: should remote these headers if cannot guarantee these 2 header not exist.
         self.write_length(dst);
-
         // put headers
-        for (name, value) in headers.iter().filter(|(name, _)| {
-            *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
-        }) {
-            dst.extend_from_slice(name.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_ref());
-            dst.extend_from_slice(b"\r\n");
-        }
+        Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
         Ok(())
     }
