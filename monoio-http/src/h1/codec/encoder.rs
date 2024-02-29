@@ -1,7 +1,7 @@
 use std::{fmt::Write, io};
 
 use bytes::{BufMut, BytesMut};
-use http::{HeaderMap, HeaderValue, StatusCode, Version};
+use http::{StatusCode, Version};
 use monoio::{
     buf::IoBuf,
     io::{sink::Sink, AsyncWriteRent, AsyncWriteRentExt},
@@ -14,9 +14,9 @@ use crate::{
         body::{Body, StreamHint},
         error::HttpError,
         ext::Reason,
-        request::RequestHead,
-        response::ResponseHead,
-        BorrowHeaderMap, IntoParts,
+        request::{RequestHead, RequestHeadRef},
+        response::{ResponseHead, ResponseHeadRef},
+        IntoParts,
     },
     h1::payload::PayloadError,
 };
@@ -42,20 +42,46 @@ impl Clone for EncodeError {
     }
 }
 
-struct HeadEncoder;
+struct HeadEncoder(pub Length);
 
 impl HeadEncoder {
-    fn set_length_header(header_map: &mut HeaderMap, length: Length) {
-        match length {
+    #[inline]
+    fn write_length(&self, dst: &mut BytesMut) {
+        match self.0 {
             Length::None => (),
             Length::ContentLength(l) => {
-                header_map.insert(http::header::CONTENT_LENGTH, l.into());
+                dst.extend_from_slice(http::header::CONTENT_LENGTH.as_ref());
+                dst.extend_from_slice(b": ");
+                let _ = write!(dst, "{l}");
+                dst.extend_from_slice(b"\r\n");
             }
             Length::Chunked => {
-                header_map.insert(
-                    http::header::TRANSFER_ENCODING,
-                    HeaderValue::from_static("chunked"),
-                );
+                dst.extend_from_slice(http::header::TRANSFER_ENCODING.as_ref());
+                dst.extend_from_slice(b": chunked\r\n");
+            }
+        }
+    }
+
+    #[inline]
+    fn write_headers(headers: &http::HeaderMap<http::HeaderValue>, dst: &mut BytesMut) {
+        if !headers.contains_key(http::header::CONTENT_LENGTH)
+            && !headers.contains_key(http::header::TRANSFER_ENCODING)
+        {
+            // fast path
+            for (name, value) in headers.iter() {
+                dst.extend_from_slice(name.as_ref());
+                dst.extend_from_slice(b": ");
+                dst.extend_from_slice(value.as_ref());
+                dst.extend_from_slice(b"\r\n");
+            }
+        } else {
+            for (name, value) in headers.iter().filter(|(name, _)| {
+                *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
+            }) {
+                dst.extend_from_slice(name.as_ref());
+                dst.extend_from_slice(b": ");
+                dst.extend_from_slice(value.as_ref());
+                dst.extend_from_slice(b"\r\n");
             }
         }
     }
@@ -64,35 +90,63 @@ impl HeadEncoder {
 impl Encoder<RequestHead> for HeadEncoder {
     type Error = io::Error;
 
-    fn encode(&mut self, mut item: RequestHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.encode(&mut item, dst)
+    #[inline]
+    fn encode(&mut self, item: RequestHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode((&item.method, &item.uri, item.version, &item.headers), dst)
     }
 }
 
-impl Encoder<&mut RequestHead> for HeadEncoder {
+impl Encoder<&RequestHead> for HeadEncoder {
+    type Error = io::Error;
+
+    #[inline]
+    fn encode(&mut self, item: &RequestHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode((&item.method, &item.uri, item.version, &item.headers), dst)
+    }
+}
+
+impl<'a> Encoder<RequestHeadRef<'a>> for HeadEncoder {
+    type Error = io::Error;
+
+    #[inline]
+    fn encode(&mut self, item: RequestHeadRef<'a>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode((item.method, item.uri, item.version, item.headers), dst)
+    }
+}
+
+impl<'a> Encoder<&RequestHeadRef<'a>> for HeadEncoder {
+    type Error = io::Error;
+
+    #[inline]
+    fn encode(&mut self, item: &RequestHeadRef<'a>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode((item.method, item.uri, item.version, item.headers), dst)
+    }
+}
+
+impl Encoder<(&http::Method, &http::Uri, http::Version, &http::HeaderMap)> for HeadEncoder {
     type Error = io::Error;
 
     fn encode(
         &mut self,
-        item: &mut RequestHead,
-        dst: &mut bytes::BytesMut,
+        item: (&http::Method, &http::Uri, http::Version, &http::HeaderMap),
+        dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
+        let (method, uri, version, headers) = item;
         // TODO: magic number here
-        dst.reserve(256 + item.headers.len() * AVERAGE_HEADER_SIZE);
+        dst.reserve(256 + headers.len() * AVERAGE_HEADER_SIZE);
         // put http method
-        dst.extend_from_slice(item.method.as_str().as_bytes());
+        dst.extend_from_slice(method.as_str().as_bytes());
         dst.extend_from_slice(b" ");
         // put path
         dst.extend_from_slice(
-            item.uri
-                .path_and_query()
+            uri.path_and_query()
                 .map(|u| u.as_str())
                 .unwrap_or("/")
                 .as_bytes(),
         );
         dst.extend_from_slice(b" ");
         // put version
-        let ver = match item.version {
+        let ver = match version {
             Version::HTTP_09 => b"HTTP/0.9\r\n",
             Version::HTTP_10 => b"HTTP/1.0\r\n",
             Version::HTTP_11 => b"HTTP/1.1\r\n",
@@ -102,13 +156,11 @@ impl Encoder<&mut RequestHead> for HeadEncoder {
         };
         dst.extend_from_slice(ver);
 
+        // put content length or transfor encoding
+        // note: should remote these headers if cannot guarantee these 2 header not exist.
+        self.write_length(dst);
         // put headers
-        for (name, value) in item.headers.iter() {
-            dst.extend_from_slice(name.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_ref());
-            dst.extend_from_slice(b"\r\n");
-        }
+        Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
         Ok(())
     }
@@ -117,29 +169,86 @@ impl Encoder<&mut RequestHead> for HeadEncoder {
 impl Encoder<ResponseHead> for HeadEncoder {
     type Error = io::Error;
 
+    #[inline]
     fn encode(&mut self, item: ResponseHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.encode(&item, dst)
+        self.encode(
+            (item.status, item.version, &item.headers, &item.extensions),
+            dst,
+        )
     }
 }
 
 impl Encoder<&ResponseHead> for HeadEncoder {
     type Error = io::Error;
 
+    #[inline]
+    fn encode(&mut self, item: &ResponseHead, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode(
+            (item.status, item.version, &item.headers, &item.extensions),
+            dst,
+        )
+    }
+}
+
+impl<'a> Encoder<ResponseHeadRef<'a>> for HeadEncoder {
+    type Error = io::Error;
+
+    #[inline]
+    fn encode(&mut self, item: ResponseHeadRef<'a>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encode(
+            (item.status, item.version, item.headers, item.extensions),
+            dst,
+        )
+    }
+}
+
+impl<'a> Encoder<&ResponseHeadRef<'a>> for HeadEncoder {
+    type Error = io::Error;
+
+    #[inline]
     fn encode(
         &mut self,
-        item: &ResponseHead,
+        item: &ResponseHeadRef<'a>,
+        dst: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
+        self.encode(
+            (item.status, item.version, item.headers, item.extensions),
+            dst,
+        )
+    }
+}
+
+impl
+    Encoder<(
+        http::StatusCode,
+        http::Version,
+        &http::HeaderMap<http::HeaderValue>,
+        &http::Extensions,
+    )> for HeadEncoder
+{
+    type Error = io::Error;
+
+    fn encode(
+        &mut self,
+        item: (
+            http::StatusCode,
+            http::Version,
+            &http::HeaderMap<http::HeaderValue>,
+            &http::Extensions,
+        ),
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
+        let (status, version, headers, extensions) = item;
         // TODO: magic number here
-        dst.reserve(256 + item.headers.len() * AVERAGE_HEADER_SIZE);
+        dst.reserve(256 + headers.len() * AVERAGE_HEADER_SIZE);
         // put version
-        if item.version == Version::HTTP_11
-            && item.status == StatusCode::OK
-            && item.extensions.get::<Reason>().is_none()
+        if version == Version::HTTP_11
+            && status == StatusCode::OK
+            && extensions.get::<Reason>().is_none()
         {
             dst.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
         } else {
-            let ver = match item.version {
+            let ver = match version {
                 Version::HTTP_11 => b"HTTP/1.1 ",
                 Version::HTTP_10 => b"HTTP/1.0 ",
                 Version::HTTP_09 => b"HTTP/0.9 ",
@@ -152,28 +261,22 @@ impl Encoder<&ResponseHead> for HeadEncoder {
             };
             dst.extend_from_slice(ver);
             // put status code
-            dst.extend_from_slice(item.status.as_str().as_bytes());
+            dst.extend_from_slice(status.as_str().as_bytes());
             dst.extend_from_slice(b" ");
             // put reason
-            let reason = match item.extensions.get::<Reason>() {
+            let reason = match extensions.get::<Reason>() {
                 Some(reason) => reason.as_bytes(),
-                None => item
-                    .status
-                    .canonical_reason()
-                    .unwrap_or("<none>")
-                    .as_bytes(),
+                None => status.canonical_reason().unwrap_or("<none>").as_bytes(),
             };
             dst.extend_from_slice(reason);
             dst.extend_from_slice(b"\r\n");
         }
 
+        // put content length or transfor encoding
+        // note: should remote these headers if cannot guarantee these 2 header not exist.
+        self.write_length(dst);
         // put headers
-        for (name, value) in item.headers.iter() {
-            dst.extend_from_slice(name.as_ref());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(value.as_ref());
-            dst.extend_from_slice(b"\r\n");
-        }
+        Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
         Ok(())
     }
@@ -248,7 +351,6 @@ impl<T, R> Sink<R> for GenericEncoder<T>
 where
     T: AsyncWriteRent,
     R: IntoParts,
-    R::Parts: BorrowHeaderMap,
     R::Body: Body,
     HeadEncoder: Encoder<R::Parts>,
     <HeadEncoder as Encoder<R::Parts>>::Error: Into<EncodeError>,
@@ -257,23 +359,19 @@ where
     type Error = HttpError;
 
     async fn send(&mut self, item: R) -> Result<(), Self::Error> {
-        let (mut head, mut payload) = item.into_parts();
+        let (head, mut payload) = item.into_parts();
 
         // if there is too much content in buffer, flush it first
         if self.buf.len() > BACKPRESSURE_BOUNDARY {
             Sink::<R>::flush(self).await?;
         }
-        let header_map = head.header_map_mut();
         let payload_type = payload.stream_hint();
 
         match payload_type {
             StreamHint::None => {
-                // set special header
-                HeadEncoder::set_length_header(header_map, Length::None);
+                let mut encoder = HeadEncoder(Length::None);
                 // encode head to buffer
-                HeadEncoder
-                    .encode(head, &mut self.buf)
-                    .map_err(Into::into)?;
+                encoder.encode(head, &mut self.buf).map_err(Into::into)?;
             }
             StreamHint::Fixed => {
                 // get data(to set content length and body)
@@ -281,15 +379,9 @@ where
                     .next_data()
                     .await
                     .expect("empty data with fixed hint")?;
-                // set special header
-                HeadEncoder::set_length_header(
-                    header_map,
-                    Length::ContentLength(data.bytes_init()),
-                );
+                let mut encoder = HeadEncoder(Length::ContentLength(data.bytes_init()));
                 // encode head to buffer
-                HeadEncoder
-                    .encode(head, &mut self.buf)
-                    .map_err(Into::into)?;
+                encoder.encode(head, &mut self.buf).map_err(Into::into)?;
                 // flush
                 if self.buf.len() + data.bytes_init() > BACKPRESSURE_BOUNDARY {
                     // if data to send is too long, we will flush the buffer
@@ -306,12 +398,9 @@ where
                 }
             }
             StreamHint::Stream => {
-                // set special header
-                HeadEncoder::set_length_header(header_map, Length::Chunked);
+                let mut encoder = HeadEncoder(Length::Chunked);
                 // encode head to buffer
-                HeadEncoder
-                    .encode(head, &mut self.buf)
-                    .map_err(Into::into)?;
+                encoder.encode(head, &mut self.buf).map_err(Into::into)?;
 
                 while let Some(data_res) = payload.next_data().await {
                     let data = data_res?;

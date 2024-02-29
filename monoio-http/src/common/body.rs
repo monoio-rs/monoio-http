@@ -37,6 +37,21 @@ pub trait Body {
     fn stream_hint(&self) -> StreamHint;
 }
 
+impl<T: Body> Body for &mut T {
+    type Data = T::Data;
+    type Error = T::Error;
+
+    #[inline]
+    fn next_data(&mut self) -> impl Future<Output = Option<Result<Self::Data, Self::Error>>> {
+        (**self).next_data()
+    }
+
+    #[inline]
+    fn stream_hint(&self) -> StreamHint {
+        (**self).stream_hint()
+    }
+}
+
 pub type Chunks = SmallVec<[Bytes; 16]>;
 
 pub trait BodyExt: Body {
