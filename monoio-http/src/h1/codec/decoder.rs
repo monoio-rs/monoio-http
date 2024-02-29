@@ -720,7 +720,7 @@ mod tests {
     use std::{collections::VecDeque, time::Instant};
 
     use bytes::BytesMut;
-    use monoio::{buf::IoVecWrapperMut, io::stream::Stream, BufResult};
+    use monoio::{buf::IoVecWrapperMut, BufResult};
 
     use super::*;
 

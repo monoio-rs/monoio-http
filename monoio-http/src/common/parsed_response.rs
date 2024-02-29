@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::hint::unreachable_unchecked;
 
 use cookie::{Cookie, CookieJar};
+use http::header::{HeaderMap, HeaderValue};
 pub use http::response::{Builder as ResponseBuilder, Parts as ResponseHead};
 
 use super::{
     error::{ExtractError, HttpError},
     response::Response,
+    Parse, QueryMap,
 };
 use crate::{common::IntoParts, impl_cookie_extractor};
 
@@ -13,8 +15,8 @@ use crate::{common::IntoParts, impl_cookie_extractor};
 #[allow(dead_code)]
 pub struct ParsedResponse<P> {
     inner: http::Response<P>,
-    cookie_jar: Option<CookieJar>,
-    url_params: Option<HashMap<String, String>>,
+    cookie_jar: Parse<CookieJar>,
+    url_params: Parse<QueryMap>,
 }
 
 impl<P> ParsedResponse<P> {
@@ -41,9 +43,10 @@ impl<P> std::ops::DerefMut for ParsedResponse<P> {
 impl<P> IntoParts for ParsedResponse<P> {
     type Parts = ResponseHead;
     type Body = P;
-    fn into_parts(self) -> (Self::Parts, Self::Body) {
+    fn into_parts(mut self) -> (Self::Parts, Self::Body) {
+        let _ = self.serialize_cookies_into_header();
         self.inner.into_parts()
     }
 }
 
-impl_cookie_extractor!(ParsedResponse, Response, "SET_COOKIE");
+impl_cookie_extractor!(ParsedResponse, "SET_COOKIE");

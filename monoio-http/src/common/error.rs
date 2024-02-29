@@ -33,8 +33,8 @@ pub enum HttpError {
     IOError(#[from] std::io::Error),
     #[error("Cookie error {0}")]
     CookieError(#[from] ExtractError),
-    #[error("SerDe error")]
-    SerDeError,
+    #[error("SerDe error {0}")]
+    SerDeError(#[from] serde_urlencoded::de::Error),
 }
 
 impl Clone for HttpError {
