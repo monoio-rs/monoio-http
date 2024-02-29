@@ -257,17 +257,11 @@ impl<P> ParsedRequest<P>
 where
     P: Into<HttpBodyStream> + 'static,
 {
-    /// Async multipart parsing. This method doesn't wait to stream the entire body before
-    /// attempting to parse it, suitable for large bodies. It returns a Multipart struct that
-    /// can be used to stream the parts of the body. It also provides constraints to limit the
-    /// size of the parts and the entire body.
-    /// See https://github.com/rousan/multer-rs/blob/master/examples/prevent_dos_attack.rs and
-    /// test_request_multi_part_parse_async.
-    pub fn parse_multipart_async<'a>(
-        self,
-        user_constraints: Option<multer::Constraints>,
-    ) -> Result<multer::Multipart<'a>, HttpError> {
-        if let Some(content_type) = self.inner().headers().get("Content-Type") {
+    /// Streams the entire body and then attempts to parse it. The body is NOT
+    /// consumed as part of this call. May not be suitable for large bodies.
+    /// See test_request_multi_part_parse2 for an example of how to use this method.
+    pub async fn parse_multipart(&mut self) -> Result<Multipart<Cursor<Bytes>>, HttpError> {
+        if let Some(content_type) = self.inner.headers().get("Content-Type") {
             let content_type_str = content_type
                 .to_str()
                 .ok()
@@ -292,6 +286,51 @@ where
                     user_constraints.unwrap_or_else(multer::Constraints::default);
                 let m =
                     multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
+                Ok(m)
+            } else {
+                Err(ExtractError::InvalidContentType.into())
+            }
+        } else {
+            Err(ExtractError::InvalidHeaderValue.into())
+        }
+    }
+}
+
+impl<P> ParsedRequest<P>
+where
+    P: futures_core::Stream<Item = Result<Bytes, HttpError>> + Send + 'static,
+{
+    /// Async multipart parsing. This method doesn't wait to stream the entire body before
+    /// attempting to parse it, suitable for large bodies. It returns a Multipart struct that
+    /// can be used to stream the parts of the body. It also provides constraints to limit the
+    /// size of the parts and the entire body.
+    /// See https://github.com/rousan/multer-rs/blob/master/examples/prevent_dos_attack.rs and
+    /// test_request_multi_part_parse_async.
+    pub fn parse_multipart_async<'a>(
+        self,
+        user_constraints: Option<multer::Constraints>,
+    ) -> Result<multer::Multipart<'a>, HttpError> {
+        if let Some(content_type) = self.inner.headers().get("Content-Type") {
+            let content_type_str = content_type
+                .to_str()
+                .ok()
+                .and_then(|s| s.split(';').next())
+                .unwrap_or_default();
+
+            if content_type_str == "multipart/form-data" {
+                // Parse the multipart request
+                let boundary = content_type
+                    .to_str()
+                    .ok()
+                    .and_then(|s| s.split("boundary=").nth(1))
+                    .unwrap_or_default()
+                    .to_string();
+
+                let (_parts, body) = self.inner.into_parts();
+
+                let constraints_to_use =
+                    user_constraints.unwrap_or_else(|| multer::Constraints::default());
+                let m = multer::Multipart::with_constraints(body, boundary, constraints_to_use);
                 Ok(m)
             } else {
                 Err(ExtractError::InvalidContentType.into())
@@ -505,6 +544,32 @@ mod tests {
             parsed_request.get_body_url_param("key2"),
             Some("value2".to_string())
         );
+    }
+
+    #[monoio::test_all]
+    async fn test_request_multi_part_parse_async() {
+        let request = create_request_multi_part();
+
+        let parsed_request = ParsedRequest::new(request);
+
+        let mut multipart_struct = parsed_request.parse_multipart_async(None).unwrap();
+
+        let field = multipart_struct.next_field().await.unwrap().unwrap();
+        assert_eq!(field.name().unwrap(), "field1");
+        let bytes = field.bytes().await.unwrap();
+        assert_eq!(bytes, Bytes::from_static(b"value1"));
+
+        let field = multipart_struct.next_field().await.unwrap().unwrap();
+        assert_eq!(field.name().unwrap(), "field2");
+        let bytes = field.bytes().await.unwrap();
+        assert_eq!(bytes, Bytes::from_static(b"value2"));
+
+        let field = multipart_struct.next_field().await.unwrap().unwrap();
+        assert_eq!(field.name().unwrap(), "file");
+        assert_eq!(field.file_name().unwrap(), "HelloWorld.txt".to_string());
+        assert_eq!(field.content_type().unwrap(), &mime::TEXT_PLAIN);
+        let bytes = field.bytes().await.unwrap();
+        assert_eq!(bytes, Bytes::from_static(b"Hello, World!"));
     }
 
     #[monoio::test_all]
