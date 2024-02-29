@@ -24,5 +24,18 @@ pub trait IntoParts {
 
 pub trait BorrowHeaderMap {
     fn header_map(&self) -> &http::HeaderMap;
-    fn header_map_mut(&mut self) -> &mut http::HeaderMap;
+}
+
+impl<T: BorrowHeaderMap> BorrowHeaderMap for &T {
+    #[inline]
+    fn header_map(&self) -> &http::HeaderMap {
+        (**self).header_map()
+    }
+}
+
+impl BorrowHeaderMap for http::HeaderMap<http::HeaderValue> {
+    #[inline]
+    fn header_map(&self) -> &http::HeaderMap {
+        self
+    }
 }
