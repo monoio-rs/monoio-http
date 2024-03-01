@@ -45,3 +45,11 @@ impl Clone for HttpError {
         }
     }
 }
+
+#[derive(ThisError, Debug)]
+pub enum EncodeDecodeError<T> {
+    #[error("encode/decode error {0}")]
+    EncodeDecode(#[from] std::io::Error),
+    #[error("http error {0}")]
+    Http(T),
+}

@@ -9,7 +9,7 @@ use futures_core::Future;
 use monoio::buf::IoBuf;
 use smallvec::SmallVec;
 
-use super::error::HttpError;
+use super::error::{EncodeDecodeError, HttpError};
 use crate::{
     common::{request::Request, response::Response},
     h1::payload::Payload,
@@ -54,31 +54,32 @@ pub trait BodyExt: Body {
     /// Consumes body and return continous memory
     fn bytes(self) -> impl Future<Output = Result<Bytes, Self::Error>>;
     /// Return bytes array
-    fn chunks(&mut self) -> impl Future<Output = Result<Chunks, Self::Error>>;
+    fn chunks(self) -> impl Future<Output = Result<Chunks, Self::Error>>;
+}
+
+pub trait BodyEncodeExt: BodyExt {
+    type EncodeDecodeError;
+
     /// Consumes body and returns decodec content
     fn decode_content(
         self,
         content_encoding: String,
-    ) -> impl Future<Output = Result<Bytes, Self::Error>>;
+    ) -> impl Future<Output = Result<Bytes, Self::EncodeDecodeError>>;
     /// Consumes body and returns encoded content
     fn encode_content(
         self,
         accept_encoding: String,
-    ) -> impl Future<Output = Result<Bytes, Self::Error>>;
+    ) -> impl Future<Output = Result<Bytes, Self::EncodeDecodeError>>;
 }
 
 impl<T> BodyExt for T
 where
-    T: Body<Data = Bytes> + FixedBody + Sized,
-    T::Error: From<std::io::Error>,
+    T: Body<Data = Bytes>,
 {
     async fn bytes(mut self) -> Result<Bytes, Self::Error> {
         match self.stream_hint() {
             StreamHint::None => Ok(Bytes::new()),
-            StreamHint::Fixed => self
-                .next_data()
-                .await
-                .expect("unable to read chunk for fixed body"),
+            StreamHint::Fixed => self.next_data().await.unwrap_or(Ok(Bytes::new())),
             StreamHint::Stream => {
                 let mut data = BytesMut::new();
                 while let Some(chunk) = self.next_data().await {
@@ -89,16 +90,14 @@ where
         }
     }
 
-    async fn chunks(&mut self) -> Result<Chunks, Self::Error> {
+    async fn chunks(mut self) -> Result<Chunks, Self::Error> {
         match self.stream_hint() {
             StreamHint::None => Ok(Chunks::new()),
             StreamHint::Fixed => {
                 let mut chunks = Chunks::new();
-                let b = self
-                    .next_data()
-                    .await
-                    .expect("unable to read chunk for fixed body")?;
-                chunks.push(b);
+                if let Some(b) = self.next_data().await {
+                    chunks.push(b?);
+                }
                 Ok(chunks)
             }
             StreamHint::Stream => {
@@ -110,9 +109,12 @@ where
             }
         }
     }
+}
 
-    async fn decode_content(self, encoding: String) -> Result<Bytes, Self::Error> {
-        let buf = self.bytes().await?;
+impl<T: BodyExt> BodyEncodeExt for T {
+    type EncodeDecodeError = EncodeDecodeError<T::Error>;
+    async fn decode_content(self, encoding: String) -> Result<Bytes, Self::EncodeDecodeError> {
+        let buf = self.bytes().await.map_err(EncodeDecodeError::Http)?;
         match encoding.as_str() {
             "gzip" => {
                 let mut decoder = GzDecoder::new(buf.as_ref());
@@ -139,8 +141,11 @@ where
         }
     }
 
-    async fn encode_content(self, accept_encoding: String) -> Result<Bytes, Self::Error> {
-        let buf = self.bytes().await?;
+    async fn encode_content(
+        self,
+        accept_encoding: String,
+    ) -> Result<Bytes, Self::EncodeDecodeError> {
+        let buf = self.bytes().await.map_err(EncodeDecodeError::Http)?;
         let accepted_encodings: Vec<String> = accept_encoding
             .split(',')
             .map(|s| s.trim().to_string())
@@ -189,19 +194,63 @@ pub enum HttpBody {
     H2(RecvStream),
 }
 
+impl HttpBody {
+    pub async fn to_ready(&mut self) -> Result<Option<Bytes>, HttpError> {
+        match self.stream_hint() {
+            StreamHint::None => Ok(None),
+            StreamHint::Fixed => match self.next_data().await {
+                None => {
+                    *self = Self::Ready(None);
+                    Ok(None)
+                }
+                Some(chunk) => {
+                    let bytes = chunk?;
+                    *self = Self::Ready(Some(bytes.clone()));
+                    Ok(Some(bytes))
+                }
+            },
+            StreamHint::Stream => {
+                let mut data = BytesMut::new();
+                while let Some(chunk) = self.next_data().await {
+                    data.extend_from_slice(&chunk?);
+                }
+                let bytes = data.freeze();
+                *self = Self::Ready(Some(bytes.clone()));
+                Ok(Some(bytes))
+            }
+        }
+    }
+
+    #[inline]
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
+    #[inline]
+    pub fn ready_data(&self) -> Option<Bytes> {
+        match self {
+            Self::Ready(b) => b.clone(),
+            _ => None,
+        }
+    }
+}
+
 impl From<Payload> for HttpBody {
+    #[inline]
     fn from(p: Payload) -> Self {
         Self::H1(p)
     }
 }
 
 impl From<RecvStream> for HttpBody {
+    #[inline]
     fn from(p: RecvStream) -> Self {
         Self::H2(p)
     }
 }
 
 impl Default for HttpBody {
+    #[inline]
     fn default() -> Self {
         Self::Ready(None)
     }
