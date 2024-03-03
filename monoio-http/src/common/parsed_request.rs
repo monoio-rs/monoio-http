@@ -268,6 +268,53 @@ where
                 .and_then(|s| s.split(';').next())
                 .unwrap_or_default();
 
+                        let (orig_parts, orig_body) = orig_req.into_parts();
+                        let data = orig_body.bytes().await?;
+
+                let req = self.inner.into_inner();
+                let (_parts, body) = req.into_parts();
+
+                let body_stream: HttpBodyStream = body.into();
+
+                let constraints_to_use =
+                    user_constraints.unwrap_or_else(multer::Constraints::default);
+                let m =
+                    multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
+                Ok(m)
+            } else {
+                Err(ExtractError::InvalidContentType.into())
+            }
+        } else {
+            self.body_url_params
+                .borrow()
+                .parsed_inner()
+                .get(name)
+                .map(|s| s.to_string())
+        }
+    }
+}
+
+impl<P> ParsedRequest<P>
+where
+    P: Into<HttpBodyStream> + 'static,
+{
+    /// Async multipart parsing. This method doesn't wait to stream the entire body before
+    /// attempting to parse it, suitable for large bodies. It returns a Multipart struct that
+    /// can be used to stream the parts of the body. It also provides constraints to limit the
+    /// size of the parts and the entire body.
+    /// See https://github.com/rousan/multer-rs/blob/master/examples/prevent_dos_attack.rs and
+    /// test_request_multi_part_parse_async.
+    pub fn parse_multipart_async<'a>(
+        self,
+        user_constraints: Option<multer::Constraints>,
+    ) -> Result<multer::Multipart<'a>, HttpError> {
+        if let Some(content_type) = self.inner().headers().get("Content-Type") {
+            let content_type_str = content_type
+                .to_str()
+                .ok()
+                .and_then(|s| s.split(';').next())
+                .unwrap_or_default();
+
             if content_type_str == "multipart/form-data" {
                 // Parse the multipart request
                 let boundary = content_type
@@ -286,51 +333,6 @@ where
                     user_constraints.unwrap_or_else(multer::Constraints::default);
                 let m =
                     multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
-                Ok(m)
-            } else {
-                Err(ExtractError::InvalidContentType.into())
-            }
-        } else {
-            Err(ExtractError::InvalidHeaderValue.into())
-        }
-    }
-}
-
-impl<P> ParsedRequest<P>
-where
-    P: futures_core::Stream<Item = Result<Bytes, HttpError>> + Send + 'static,
-{
-    /// Async multipart parsing. This method doesn't wait to stream the entire body before
-    /// attempting to parse it, suitable for large bodies. It returns a Multipart struct that
-    /// can be used to stream the parts of the body. It also provides constraints to limit the
-    /// size of the parts and the entire body.
-    /// See https://github.com/rousan/multer-rs/blob/master/examples/prevent_dos_attack.rs and
-    /// test_request_multi_part_parse_async.
-    pub fn parse_multipart_async<'a>(
-        self,
-        user_constraints: Option<multer::Constraints>,
-    ) -> Result<multer::Multipart<'a>, HttpError> {
-        if let Some(content_type) = self.inner.headers().get("Content-Type") {
-            let content_type_str = content_type
-                .to_str()
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .unwrap_or_default();
-
-            if content_type_str == "multipart/form-data" {
-                // Parse the multipart request
-                let boundary = content_type
-                    .to_str()
-                    .ok()
-                    .and_then(|s| s.split("boundary=").nth(1))
-                    .unwrap_or_default()
-                    .to_string();
-
-                let (_parts, body) = self.inner.into_parts();
-
-                let constraints_to_use =
-                    user_constraints.unwrap_or_else(|| multer::Constraints::default());
-                let m = multer::Multipart::with_constraints(body, boundary, constraints_to_use);
                 Ok(m)
             } else {
                 Err(ExtractError::InvalidContentType.into())

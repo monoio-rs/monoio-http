@@ -305,32 +305,6 @@ impl Body for HttpBody {
     }
 }
 
-impl futures_core::Stream for HttpBody {
-    type Item = Result<Bytes, HttpError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        match self.get_mut() {
-            Self::Ready(b) => {
-                let b = b.take();
-                std::task::Poll::Ready(b.map(Ok))
-            }
-            Self::H1(p) => {
-                let p = pin!(p.next_data());
-                p.poll(cx)
-            }
-            Self::H2(p) => {
-                let p = pin!(p.next_data());
-                p.poll(cx).map_err(|e| HttpError::from(e))
-            }
-        }
-    }
-}
-
-unsafe impl Send for HttpBody {}
-
 pub trait FixedBody: Body {
     fn fixed_body(data: Option<Bytes>) -> Self;
 }
