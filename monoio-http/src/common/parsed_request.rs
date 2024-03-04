@@ -4,8 +4,6 @@ use bytes::Bytes;
 use cookie::{Cookie, CookieJar};
 pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 
-// use multipart::server::nickel::nickel::hyper::header::Origin;
-// use multipart::server::Multipart;
 use super::body::HttpBodyStream;
 use super::{
     body::{Body, BodyExt, FixedBody},
@@ -20,6 +18,7 @@ pub struct ParsedRequest<P> {
     cookie_jar: RefCell<Parse<CookieJar>>,
     url_params: RefCell<Parse<QueryMap>>,
     body_url_params: RefCell<Parse<QueryMap>>,
+    multipart_form: RefCell<Parse<super::multipart::ParsedMuliPartForm>>,
 }
 
 impl<P> From<Request<P>> for ParsedRequest<P> {
@@ -30,6 +29,7 @@ impl<P> From<Request<P>> for ParsedRequest<P> {
             cookie_jar: RefCell::new(Parse::Unparsed),
             url_params: RefCell::new(Parse::Unparsed),
             body_url_params: RefCell::new(Parse::Unparsed),
+            multipart_form: RefCell::new(Parse::Unparsed), 
         }
     }
 }

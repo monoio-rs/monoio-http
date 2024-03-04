@@ -37,6 +37,9 @@ pub enum HttpError {
     CookieError(#[from] ExtractError),
     #[error("SerDe error {0}")]
     SerDeError(#[from] serde_urlencoded::de::Error),
+    #[error("Multer Error")]
+    MulterError(#[from] multer::Error),
+ 
 }
 
 impl Clone for HttpError {

@@ -27,6 +27,7 @@ serde_urlencoded = "0.7"
 multipart = "0.18"
 mime = "0.3"
 multer = "3.0.0"
+tempfile = "3.10.1"
 
 httparse = "1"
 memchr = "2.5"

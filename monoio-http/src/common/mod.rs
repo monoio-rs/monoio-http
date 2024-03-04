@@ -9,6 +9,7 @@ pub mod parsed_request;
 pub mod parsed_response;
 pub mod request;
 pub mod response;
+pub mod multipart;
 
 pub(crate) mod waker;
 
