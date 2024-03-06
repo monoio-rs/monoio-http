@@ -1,4 +1,8 @@
-use std::io::{Cursor, Read};
+use std::{
+    cell::UnsafeCell,
+    io::{Cursor, Read},
+    task::{ready, Poll},
+};
 
 use bytes::{Bytes, BytesMut};
 use flate2::{
@@ -7,6 +11,7 @@ use flate2::{
 };
 use futures_core::Future;
 use monoio::buf::IoBuf;
+use monoio_compat::box_future::MaybeArmedBoxFuture;
 use smallvec::SmallVec;
 
 use super::error::{EncodeDecodeError, HttpError};
@@ -307,5 +312,45 @@ pub trait FixedBody: Body {
 impl FixedBody for HttpBody {
     fn fixed_body(data: Option<Bytes>) -> Self {
         Self::Ready(data)
+    }
+}
+
+#[derive(Debug)]
+pub struct HttpBodyStream {
+    inner: UnsafeCell<HttpBody>,
+    stream_fut: MaybeArmedBoxFuture<Option<Result<Bytes, HttpError>>>,
+}
+
+impl HttpBodyStream {
+    pub fn new(inner: HttpBody) -> Self {
+        let stream_fut = MaybeArmedBoxFuture::new(async move { Some(Ok(Bytes::new())) });
+        Self {
+            inner: UnsafeCell::new(inner),
+            stream_fut,
+        }
+    }
+}
+
+unsafe impl Send for HttpBodyStream {}
+
+impl From<HttpBody> for HttpBodyStream {
+    fn from(b: HttpBody) -> Self {
+        Self::new(b)
+    }
+}
+
+impl futures_core::Stream for HttpBodyStream {
+    type Item = Result<Bytes, HttpError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if !self.stream_fut.armed() {
+            let body_stream = unsafe { &mut *(self.inner.get()) };
+            self.stream_fut.arm_future(body_stream.next_data());
+        }
+
+        Poll::Ready(ready!(self.stream_fut.poll(cx)))
     }
 }

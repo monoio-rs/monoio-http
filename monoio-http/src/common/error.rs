@@ -17,6 +17,8 @@ pub enum ExtractError {
     InvalidHeaderValue,
     #[error("Invalid content type")]
     InvalidContentType,
+    #[error("Missing URL")]
+    MissingURL,
 }
 
 #[derive(ThisError, Debug)]

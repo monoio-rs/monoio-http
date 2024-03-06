@@ -10,9 +10,6 @@ pub mod parsed_response;
 pub mod request;
 pub mod response;
 
-#[macro_use]
-pub(crate) mod macros;
-
 pub(crate) mod waker;
 
 pub trait FromParts<P, B = Bytes> {
@@ -67,6 +64,32 @@ impl<T> Parse<T> {
     #[inline]
     pub fn is_unparsed(&self) -> bool {
         matches!(self, Parse::Unparsed)
+    }
+
+    #[inline]
+    pub fn is_unparsed_or_failed(&self) -> bool {
+        (matches!(self, Parse::Failed) || matches!(self, Parse::Unparsed))
+    }
+
+    #[inline]
+    pub fn is_parsed(&self) -> bool {
+        matches!(self, Parse::Parsed(_))
+    }
+
+    #[inline]
+    pub fn parsed_inner(&self) -> &T {
+        match self {
+            Parse::Parsed(inner) => inner,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    #[inline]
+    pub fn parsed_inner_mut(&mut self) -> &mut T {
+        match self {
+            Parse::Parsed(inner) => inner,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
     }
 }
 
