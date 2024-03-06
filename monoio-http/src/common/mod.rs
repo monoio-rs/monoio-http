@@ -78,7 +78,7 @@ impl<T> Parse<T> {
     }
 
     #[inline]
-    pub fn parsed_inner(&self) -> &T {
+    pub fn parsed_inner_ref(&self) -> &T {
         match self {
             Parse::Parsed(inner) => inner,
             _ => unsafe { std::hint::unreachable_unchecked() },
@@ -87,6 +87,14 @@ impl<T> Parse<T> {
 
     #[inline]
     pub fn parsed_inner_mut(&mut self) -> &mut T {
+        match self {
+            Parse::Parsed(inner) => inner,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    #[inline]
+    pub fn parsed_inner(self) ->  T {
         match self {
             Parse::Parsed(inner) => inner,
             _ => unsafe { std::hint::unreachable_unchecked() },

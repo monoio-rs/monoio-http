@@ -5,6 +5,7 @@ use cookie::{Cookie, CookieJar};
 pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 
 use super::body::HttpBodyStream;
+use super::multipart::{FieldHeader, ParsedMuliPartForm, RetFileHeader};
 use super::{
     body::{Body, BodyExt, FixedBody},
     error::{ExtractError, HttpError},
@@ -18,7 +19,7 @@ pub struct ParsedRequest<P> {
     cookie_jar: RefCell<Parse<CookieJar>>,
     url_params: RefCell<Parse<QueryMap>>,
     body_url_params: RefCell<Parse<QueryMap>>,
-    multipart_form: RefCell<Parse<super::multipart::ParsedMuliPartForm>>,
+    multipart_params: RefCell<Parse<ParsedMuliPartForm>>,
 }
 
 impl<P> From<Request<P>> for ParsedRequest<P> {
@@ -29,7 +30,7 @@ impl<P> From<Request<P>> for ParsedRequest<P> {
             cookie_jar: RefCell::new(Parse::Unparsed),
             url_params: RefCell::new(Parse::Unparsed),
             body_url_params: RefCell::new(Parse::Unparsed),
-            multipart_form: RefCell::new(Parse::Unparsed), 
+            multipart_params: RefCell::new(Parse::Unparsed), 
         }
     }
 }
@@ -41,6 +42,7 @@ impl<P> ParsedRequest<P> {
             cookie_jar: RefCell::new(Parse::Unparsed),
             url_params: RefCell::new(Parse::Unparsed),
             body_url_params: RefCell::new(Parse::Unparsed),
+            multipart_params: RefCell::new(Parse::Unparsed)
         }
     }
 
@@ -57,6 +59,20 @@ impl<P> ParsedRequest<P> {
     fn inner(&self) -> &Request<P> {
         unsafe { &*self.inner.get() }
     }
+}
+
+impl<P: From<ParsedMuliPartForm>> ParsedRequest<P> 
+{
+    pub fn into_multipart_body_request(self) -> Request<P> {
+        self.serialize_cookies_into_header();
+        if self.multipart_params.borrow().is_parsed() {
+            let multipart = self.multipart_params.into_inner().parsed_inner();
+            let (parts, _) = self.inner.into_inner().into_parts();
+            Request::from_parts(parts, P::from(multipart))
+        } else {
+            self.inner.into_inner()
+        }
+   }
 }
 
 impl<P> ParsedRequest<P> {
@@ -101,7 +117,7 @@ impl<P> ParsedRequest<P> {
                     })?;
                     *self.url_params.borrow_mut() = Parse::Parsed(parsed);
                     Ok(Ref::map(self.url_params.borrow(), |params| {
-                        params.parsed_inner()
+                        params.parsed_inner_ref()
                     }))
                 }
                 None => {
@@ -111,7 +127,7 @@ impl<P> ParsedRequest<P> {
             }
         } else {
             Ok(Ref::map(self.url_params.borrow(), |params| {
-                params.parsed_inner()
+                params.parsed_inner_ref()
             }))
         }
     }
@@ -141,7 +157,7 @@ impl<P> ParsedRequest<P> {
         }
 
         Ok(Ref::map(self.cookie_jar.borrow(), |params| {
-            params.parsed_inner()
+            params.parsed_inner_ref()
         }))
     }
 
@@ -168,7 +184,7 @@ impl<P> ParsedRequest<P> {
     fn serialize_cookies_into_header(&self) {
         if self.cookie_jar.borrow().is_parsed() {
             let jar = self.cookie_jar.borrow();
-            let jar = jar.parsed_inner();
+            let jar = jar.parsed_inner_ref();
 
             let cookies = jar
                 .iter()
@@ -225,7 +241,7 @@ where
 
                         *self.body_url_params.borrow_mut() = Parse::Parsed(params);
                         Ok(Ref::map(self.body_url_params.borrow(), |params| {
-                            params.parsed_inner()
+                            params.parsed_inner_ref()
                         }))
                     } else {
                         Err(ExtractError::InvalidContentType.into())
@@ -235,7 +251,7 @@ where
             }
         } else {
             Ok(Ref::map(self.body_url_params.borrow(), |params| {
-                params.parsed_inner()
+                params.parsed_inner_ref()
             }))
         }
     }
@@ -246,7 +262,7 @@ where
         } else {
             self.body_url_params
                 .borrow()
-                .parsed_inner()
+                .parsed_inner_ref()
                 .get(name)
                 .map(|s| s.to_string())
         }
@@ -255,7 +271,7 @@ where
 
 impl<P> ParsedRequest<P>
 where
-    P: Into<HttpBodyStream> + 'static,
+    P: Into<HttpBodyStream> + 'static + FixedBody,
 {
     /// Streams the entire body and then attempts to parse it. The body is NOT
     /// consumed as part of this call. May not be suitable for large bodies.
@@ -339,6 +355,78 @@ where
             }
         } else {
             Err(ExtractError::InvalidHeaderValue.into())
+        }
+    }
+
+    pub async fn parse_multipart_params<'a>(
+        &self,
+        user_constraints: Option<multer::Constraints>,
+    ) -> Result<Ref<ParsedMuliPartForm>, HttpError> {
+        if let Some(content_type) = self.inner().headers().get("Content-Type") {
+            let content_type_str = content_type
+                .to_str()
+                .ok()
+                .and_then(|s| s.split(';').next())
+                .unwrap_or_default();
+
+            if content_type_str == "multipart/form-data" {
+                // Parse the multipart request
+                let boundary = content_type
+                    .to_str()
+                    .ok()
+                    .and_then(|s| s.split("boundary=").nth(1))
+                    .unwrap_or_default()
+                    .to_string();
+
+                let temp_req = Request::new(P::fixed_body(None));
+                let orig_req = unsafe {
+                    let orig_req = self.inner.get();
+                    let orig_copy = std::ptr::read(orig_req);
+                    std::ptr::write(orig_req, temp_req);
+                    orig_copy
+                };
+
+                let (_orig_parts, orig_body) = orig_req.into_parts();
+
+                let body_stream: HttpBodyStream = orig_body.into();
+
+                let constraints_to_use =
+                    user_constraints.unwrap_or_else(multer::Constraints::default);
+                let multer =
+                    multer::Multipart::with_constraints(body_stream, boundary.clone(), constraints_to_use);
+
+               let parsed_multi_part = ParsedMuliPartForm::read_form(multer, boundary).await?; 
+               *self.multipart_params.borrow_mut() = Parse::Parsed(parsed_multi_part);
+                Ok(Ref::map(self.multipart_params.borrow(), |params| {
+                    params.parsed_inner_ref()
+                }))
+            } else {
+                Err(ExtractError::InvalidContentType.into())
+            }
+        } else {
+            Err(ExtractError::InvalidHeaderValue.into())
+        }
+    }
+
+    pub fn get_multipart_field_param(&self, name: &str) -> Option<Vec<FieldHeader>> {
+        if self.multipart_params.borrow().is_unparsed_or_failed() {
+            None
+        } else {
+            self.multipart_params
+                .borrow()
+                .parsed_inner_ref()
+                .get_field_value(name)
+        }
+    }
+
+    pub fn get_multipart_file_param(&self, name: &str) -> Option<Vec<RetFileHeader>> {
+        if self.multipart_params.borrow().is_unparsed_or_failed() {
+            None
+        } else {
+            self.multipart_params
+                .borrow()
+                .parsed_inner_ref()
+                .get_file(name)
         }
     }
 }
@@ -557,6 +645,9 @@ mod tests {
         let mut multipart_struct = parsed_request.parse_multipart_async(None).unwrap();
 
         let field = multipart_struct.next_field().await.unwrap().unwrap();
+
+        assert_eq!(field.headers().get("content-disposition").unwrap(), "field1");
+
         assert_eq!(field.name().unwrap(), "field1");
         let bytes = field.bytes().await.unwrap();
         assert_eq!(bytes, Bytes::from_static(b"value1"));

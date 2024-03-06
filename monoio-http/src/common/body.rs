@@ -197,6 +197,7 @@ pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
     H2(RecvStream),
+    Multipart(ParsedMuliPartForm)
 }
 
 impl HttpBody {
@@ -292,6 +293,7 @@ impl Body for HttpBody {
             Self::Ready(b) => b.take().map(Result::Ok),
             Self::H1(ref mut p) => p.next_data().await,
             Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+            Self::Multipart(ref mut p) => p.next_data().await,
         }
     }
 
@@ -301,6 +303,7 @@ impl Body for HttpBody {
             Self::Ready(None) => StreamHint::None,
             Self::H1(ref p) => p.stream_hint(),
             Self::H2(ref p) => p.stream_hint(),
+            Self::Multipart(ref p) => p.stream_hint(),
         }
     }
 }
@@ -314,6 +317,7 @@ impl FixedBody for HttpBody {
         Self::Ready(data)
     }
 }
+
 
 #[derive(Debug)]
 pub struct HttpBodyStream {

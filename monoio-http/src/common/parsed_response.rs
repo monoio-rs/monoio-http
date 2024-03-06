@@ -82,7 +82,7 @@ impl<P> ParsedResponse<P> {
         }
 
         Ok(Ref::map(self.cookie_jar.borrow(), |params| {
-            params.parsed_inner()
+            params.parsed_inner_ref()
         }))
     }
 
@@ -109,7 +109,7 @@ impl<P> ParsedResponse<P> {
     fn serialize_cookies_into_header(&self) {
         if self.cookie_jar.borrow().is_parsed() {
             let jar = self.cookie_jar.borrow();
-            let jar = jar.parsed_inner();
+            let jar = jar.parsed_inner_ref();
 
             let cookies = jar
                 .iter()
