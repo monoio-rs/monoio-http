@@ -271,94 +271,14 @@ impl<P> ParsedRequest<P>
 where
     P: Into<HttpBodyStream> + 'static + FixedBody,
 {
-    /// Streams the entire body and then attempts to parse it. The body is NOT
-    /// consumed as part of this call. May not be suitable for large bodies.
-    /// See test_request_multi_part_parse2 for an example of how to use this method.
-    pub async fn parse_multipart(&mut self) -> Result<Multipart<Cursor<Bytes>>, HttpError> {
-        if let Some(content_type) = self.inner.headers().get("Content-Type") {
-            let content_type_str = content_type
-                .to_str()
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .unwrap_or_default();
-
-                        let (orig_parts, orig_body) = orig_req.into_parts();
-                        let data = orig_body.bytes().await?;
-
-                let req = self.inner.into_inner();
-                let (_parts, body) = req.into_parts();
-
-                let body_stream: HttpBodyStream = body.into();
-
-                let constraints_to_use =
-                    user_constraints.unwrap_or_else(multer::Constraints::default);
-                let m =
-                    multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
-                Ok(m)
-            } else {
-                Err(ExtractError::InvalidContentType.into())
-            }
-        } else {
-            self.body_url_params
-                .borrow()
-                .parsed_inner()
-                .get(name)
-                .map(|s| s.to_string())
-        }
-    }
-}
-
-impl<P> ParsedRequest<P>
-where
-    P: Into<HttpBodyStream> + 'static,
-{
-    /// Async multipart parsing. This method doesn't wait to stream the entire body before
-    /// attempting to parse it, suitable for large bodies. It returns a Multipart struct that
-    /// can be used to stream the parts of the body. It also provides constraints to limit the
-    /// size of the parts and the entire body.
-    /// See https://github.com/rousan/multer-rs/blob/master/examples/prevent_dos_attack.rs and
-    /// test_request_multi_part_parse_async.
-    pub fn parse_multipart_async<'a>(
-        self,
-        user_constraints: Option<multer::Constraints>,
-    ) -> Result<multer::Multipart<'a>, HttpError> {
-        if let Some(content_type) = self.inner().headers().get("Content-Type") {
-            let content_type_str = content_type
-                .to_str()
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .unwrap_or_default();
-
-            if content_type_str == "multipart/form-data" {
-                // Parse the multipart request
-                let boundary = content_type
-                    .to_str()
-                    .ok()
-                    .and_then(|s| s.split("boundary=").nth(1))
-                    .unwrap_or_default()
-                    .to_string();
-
-                let req = self.inner.into_inner();
-                let (_parts, body) = req.into_parts();
-
-                let body_stream: HttpBodyStream = body.into();
-
-                let constraints_to_use =
-                    user_constraints.unwrap_or_else(multer::Constraints::default);
-                let m =
-                    multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
-                Ok(m)
-            } else {
-                Err(ExtractError::InvalidContentType.into())
-            }
-        } else {
-            Err(ExtractError::InvalidHeaderValue.into())
-        }
-    }
-
+    /// See https://docs.rs/multer/latest/multer/struct.Constraints.html for constraints. 
+    /// Size limits for whole stream body, per field, allowed fields etc.
+    /// Any field with a file size greater than max_file_size will be stored on disk.
+    /// Default max_file_size is 10MB.
     pub async fn parse_multipart_params<'a>(
         &self,
         user_constraints: Option<multer::Constraints>,
+        max_file_size: Option<u64>,
     ) -> Result<Ref<ParsedMuliPartForm>, HttpError> {
         if let Some(content_type) = self.inner().headers().get("Content-Type") {
             let content_type_str = content_type
@@ -387,15 +307,17 @@ where
 
                 let body_stream: HttpBodyStream = orig_body.into();
 
-                let constraints_to_use =
-                    user_constraints.unwrap_or_else(multer::Constraints::default);
+                let constraints_to_use = user_constraints.unwrap_or_default();
                 let multer = multer::Multipart::with_constraints(
                     body_stream,
                     boundary.clone(),
                     constraints_to_use,
                 );
 
-                let parsed_multi_part = ParsedMuliPartForm::read_form(multer, boundary).await?;
+                let max_file_size = max_file_size.unwrap_or(super::multipart::MAX_FILE_SIZE);
+
+                let parsed_multi_part =
+                    ParsedMuliPartForm::read_form(multer, boundary, max_file_size).await?;
                 *self.multipart_params.borrow_mut() = Parse::Parsed(parsed_multi_part);
                 Ok(Ref::map(self.multipart_params.borrow(), |params| {
                     params.parsed_inner_ref()
@@ -413,7 +335,7 @@ where
             None
         } else if self.multipart_params.borrow().is_unparsed() {
             // Return none if parsing fails
-            self.parse_multipart_params(None)
+            self.parse_multipart_params(None, None)
                 .await
                 .ok()
                 .and_then(|p| p.get_field_value(name))
@@ -430,7 +352,7 @@ where
             None
         } else if self.multipart_params.borrow().is_unparsed() {
             // Return none if parsing fails
-            self.parse_multipart_params(None)
+            self.parse_multipart_params(None, None)
                 .await
                 .ok()
                 .and_then(|p| p.get_file(name))
@@ -445,10 +367,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs::File,
-        io::{Cursor, Read, Write},
-    };
+
+    use std::{io::Read, path::PathBuf};
 
     use http::header::{HeaderValue, COOKIE};
 
@@ -636,52 +556,114 @@ mod tests {
             HeaderValue::from_str(content_type.as_str()).unwrap(),
         );
 
-        let mut multipart_struct = parsed_request.parse_multipart_async(None).unwrap();
+        request
+    }
 
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
+    fn create_request_multi_part_files_only() -> Request<HttpBody> {
+        let body = b"--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file1\"; filename=\"File1.txt\"\r\ncontent-type: text/plain\r\n\r\nHello from world1.\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file2\"; filename=\"File2.txt\"\r\ncontent-type: text/plain\r\n\r\nHello from world2.\r\n--iYJaNWIc97YKxZYB--\r\n";
+        let boundary = "iYJaNWIc97YKxZYB";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        let body = HttpBody::fixed_body(Some(Bytes::from(body.to_vec())));
+        let mut request = Request::new(body);
+        request.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_str(content_type.as_str()).unwrap(),
+        );
 
-        assert_eq!(field.headers().get("content-disposition").unwrap(), "field1");
-
-        assert_eq!(field.name().unwrap(), "field1");
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"value1"));
-
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
-        assert_eq!(field.name().unwrap(), "field2");
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"value2"));
-
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
-        assert_eq!(field.name().unwrap(), "file");
-        assert_eq!(field.file_name().unwrap(), "HelloWorld.txt".to_string());
-        assert_eq!(field.content_type().unwrap(), &mime::TEXT_PLAIN);
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"Hello, World!"));
+        request
     }
 
     #[monoio::test_all]
-    async fn test_request_multi_part_parse_async() {
+    async fn test_request_parsed_multipartform_to_body() {
         let request = create_request_multi_part();
+        let (part, body) = request.into_parts();
+        let mp_body_bytes_1 = body.bytes().await.unwrap();
+        let request =
+            Request::from_parts(part, HttpBody::fixed_body(Some(mp_body_bytes_1.clone())));
 
         let parsed_request = ParsedRequest::new(request);
 
-        let mut multipart_struct = parsed_request.parse_multipart_async(None).unwrap();
+        parsed_request
+            .parse_multipart_params(None, None)
+            .await
+            .unwrap();
 
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
-        assert_eq!(field.name().unwrap(), "field1");
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"value1"));
+        let result = parsed_request
+            .get_multipart_field_param("field1")
+            .await
+            .unwrap();
+        assert_eq!(result[0].value, "value1");
 
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
-        assert_eq!(field.name().unwrap(), "field2");
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"value2"));
+        let result = parsed_request
+            .get_multipart_field_param("field2")
+            .await
+            .unwrap();
+        assert_eq!(result[0].value, "value2");
 
-        let field = multipart_struct.next_field().await.unwrap().unwrap();
-        assert_eq!(field.name().unwrap(), "file");
-        assert_eq!(field.file_name().unwrap(), "HelloWorld.txt".to_string());
-        assert_eq!(field.content_type().unwrap(), &mime::TEXT_PLAIN);
-        let bytes = field.bytes().await.unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"Hello, World!"));
+        let req_mp = parsed_request.into_multipart_body_request();
+        let mp_converted_body_bytes = req_mp.into_body().bytes().await.unwrap();
+
+        // Order of fields can be different
+        let body = b"--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"field1\"\r\n\r\nvalue1\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"field2\"\r\n\r\nvalue2\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file\"; filename=\"HelloWorld.txt\"\r\ncontent-type: text/plain\r\n\r\nHello, World!\nHello, World!\nHello, World!\nHello, World!\nHello, World!\nHello, World!\n\r\n--iYJaNWIc97YKxZYB--\r\n";
+        let mp_body_bytes_2 = Bytes::from(body.to_vec());
+
+        assert!(
+            mp_converted_body_bytes == mp_body_bytes_1
+                || mp_converted_body_bytes == mp_body_bytes_2
+        );
+    }
+
+    fn read_file(path: PathBuf) -> Vec<u8> {
+        let mut file = std::fs::File::open(path).unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+        buf
+    }
+
+    #[monoio::test_all]
+    async fn test_request_parsed_multipartform_files() {
+        let request = create_request_multi_part_files_only();
+        let (part, body) = request.into_parts();
+        let mp_body_bytes_1 = body.bytes().await.unwrap();
+        let request =
+            Request::from_parts(part, HttpBody::fixed_body(Some(mp_body_bytes_1.clone())));
+
+        let parsed_request = ParsedRequest::new(request);
+
+        // Restrict Max file size to 2 bytes, File will be stored on disk instead
+        // of in memory
+        parsed_request
+            .parse_multipart_params(None, Some(2))
+            .await
+            .unwrap();
+
+        let result = parsed_request
+            .get_multipart_file_param("file1")
+            .await
+            .unwrap();
+
+        assert_eq!(result[0].get_filename(), "File1.txt");
+        let path = result[0].get_file_path().unwrap();
+        assert_eq!(&read_file(path), b"Hello from world1.");
+
+        let result = parsed_request
+            .get_multipart_file_param("file2")
+            .await
+            .unwrap();
+        assert_eq!(result[0].get_filename(), "File2.txt");
+        let path = result[0].get_file_path().unwrap();
+        assert_eq!(&read_file(path), b"Hello from world2.");
+
+        let req_mp = parsed_request.into_multipart_body_request();
+        let mp_converted_body_bytes = req_mp.into_body().bytes().await.unwrap();
+
+        // Order of fields can be different
+        let body = b"--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file2\"; filename=\"File2.txt\"\r\ncontent-type: text/plain\r\n\r\nHello from world2.\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file1\"; filename=\"File1.txt\"\r\ncontent-type: text/plain\r\n\r\nHello from world1.\r\n--iYJaNWIc97YKxZYB--\r\n";
+        let mp_body_bytes_2 = Bytes::from(body.to_vec());
+
+        assert!(
+            mp_converted_body_bytes == mp_body_bytes_1
+                || mp_converted_body_bytes == mp_body_bytes_2
+        );
     }
 }

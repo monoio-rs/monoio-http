@@ -14,7 +14,10 @@ use monoio::buf::IoBuf;
 use monoio_compat::box_future::MaybeArmedBoxFuture;
 use smallvec::SmallVec;
 
-use super::error::{EncodeDecodeError, HttpError};
+use super::{
+    error::{EncodeDecodeError, HttpError},
+    multipart::ParsedMuliPartForm,
+};
 use crate::{
     common::{request::Request, response::Response},
     h1::payload::Payload,

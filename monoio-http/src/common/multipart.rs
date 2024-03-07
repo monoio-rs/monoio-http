@@ -13,7 +13,7 @@ use super::{
     error::HttpError,
 };
 
-const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 #[derive(Debug, Clone)]
 enum Data {
@@ -41,6 +41,7 @@ pub struct ParsedMuliPartForm {
     boundary: String,
     first_part: bool,
     closed: bool,
+    max_file_size: u64,
 }
 
 impl FieldHeader {
@@ -77,25 +78,26 @@ impl From<ParsedMuliPartForm> for HttpBody {
 }
 
 impl ParsedMuliPartForm {
-    pub fn new(boundary: String) -> Self {
+    pub fn new(boundary: String, max_file_size: u64) -> Self {
         Self {
             value: HashMap::new(),
             file: HashMap::new(),
             boundary,
             first_part: true,
             closed: false,
+            max_file_size,
         }
     }
 
     fn insert_field_value(&mut self, key: String, value: String, headers: HeaderMap) {
         self.value
             .entry(key)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(FieldHeader { value, headers });
     }
 
     fn insert_file(&mut self, key: String, file: FileHeader) {
-        self.file.entry(key).or_insert_with(Vec::new).push(file);
+        self.file.entry(key).or_default().push(file);
     }
 
     fn insert_file_data(&mut self, key: String, filename: String, headers: HeaderMap, data: Data) {
@@ -110,7 +112,7 @@ impl ParsedMuliPartForm {
     }
 
     pub fn get_field_value(&self, key: &str) -> Option<Vec<FieldHeader>> {
-        self.value.get(key).map(|v| v.clone())
+        self.value.get(key).cloned()
     }
 
     pub fn get_file(&self, key: &str) -> Option<Vec<FileHeader>> {
@@ -132,11 +134,11 @@ impl ParsedMuliPartForm {
     }
 
     fn get_next_file_key(&self) -> Option<String> {
-        self.file.keys().next().map(|k| k.clone())
+        self.file.keys().next().cloned()
     }
 
     fn write_part(&mut self, mut buf: BytesMut, headers: HeaderMap) -> Result<BytesMut, HttpError> {
-        if self.first_part == false {
+        if !self.first_part {
             buf.extend_from_slice(format!("\r\n--{}\r\n", self.boundary).as_bytes());
         } else {
             buf.extend_from_slice(format!("--{}\r\n", self.boundary).as_bytes());
@@ -158,7 +160,7 @@ impl ParsedMuliPartForm {
                 Err(_) => {
                     buf.extend_from_slice(format!("{}: ", key).as_bytes());
                     buf.extend_from_slice(header_value.as_bytes());
-                    buf.extend_from_slice(format!("\r\n").as_bytes());
+                    buf.extend_from_slice("\r\n".to_string().as_bytes());
                 }
             }
         }
@@ -205,7 +207,7 @@ impl ParsedMuliPartForm {
                         if bytes_written == 0 {
                             break;
                         }
-                        buf.extend_from_slice(&read_chunk[..(bytes_written as usize)]);
+                        buf.extend_from_slice(&read_chunk[..bytes_written]);
                     }
                 }
             };
@@ -226,14 +228,15 @@ impl ParsedMuliPartForm {
     pub async fn read_form(
         mut multer_multipart: multer::Multipart<'_>,
         boundary: String,
+        max_file_size: u64,
     ) -> Result<Self, HttpError> {
-        let mut form = ParsedMuliPartForm::new(boundary);
+        let mut form = ParsedMuliPartForm::new(boundary, max_file_size);
         while let Some(mut field) = multer_multipart.next_field().await? {
             let name = field.name().unwrap_or_default().to_string();
-            let file_name = field.file_name().unwrap_or_else(|| "").to_string();
+            let file_name = field.file_name().unwrap_or("").to_string();
             let headers = field.headers().clone();
 
-            if file_name == "" {
+            if file_name.is_empty() {
                 let value = field.bytes().await?.to_vec();
                 let value = String::from_utf8_lossy(&value).to_string();
                 println!("name: {:?}, Value: {:?}", name, value);
@@ -255,7 +258,7 @@ impl ParsedMuliPartForm {
                 pos += res? as u64;
             }
 
-            let data = if (pos as usize) < MAX_FILE_SIZE {
+            let data = if pos < form.max_file_size {
                 let _ = file.close().await;
                 let buf = BytesMut::with_capacity(pos as usize);
                 let file = monoio::fs::File::open(path.clone()).await?;
@@ -278,23 +281,23 @@ impl Body for ParsedMuliPartForm {
     type Error = HttpError;
 
     async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
-        if self.value.len() > 0 {
+        if !self.value.is_empty() {
             return self
                 .write_forms()
-                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
+                .map_or_else(|e| Some(Err(e)), |v| v.map(Ok));
         }
 
         if let Some(key) = self.get_next_file_key() {
             return self
                 .write_file(key)
                 .await
-                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
+                .map_or_else(|e| Some(Err(e)), |v| v.map(Ok));
         }
 
         if !self.closed && self.value.is_empty() && self.file.is_empty() {
             return self
                 .close_multipart()
-                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
+                .map_or_else(|e| Some(Err(e)), |v| v.map(Ok));
         }
         None
     }
