@@ -197,7 +197,7 @@ pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
     H2(RecvStream),
-    Multipart(ParsedMuliPartForm)
+    Multipart(ParsedMuliPartForm),
 }
 
 impl HttpBody {
@@ -317,7 +317,6 @@ impl FixedBody for HttpBody {
         Self::Ready(data)
     }
 }
-
 
 #[derive(Debug)]
 pub struct HttpBodyStream {

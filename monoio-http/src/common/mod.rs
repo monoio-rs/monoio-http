@@ -5,11 +5,11 @@ use bytes::Bytes;
 pub mod body;
 pub mod error;
 pub mod ext;
+pub mod multipart;
 pub mod parsed_request;
 pub mod parsed_response;
 pub mod request;
 pub mod response;
-pub mod multipart;
 
 pub(crate) mod waker;
 
@@ -78,6 +78,11 @@ impl<T> Parse<T> {
     }
 
     #[inline]
+    pub fn is_parsing_failed(&self) -> bool {
+        matches!(self, Parse::Failed)
+    }
+
+    #[inline]
     pub fn parsed_inner_ref(&self) -> &T {
         match self {
             Parse::Parsed(inner) => inner,
@@ -94,7 +99,7 @@ impl<T> Parse<T> {
     }
 
     #[inline]
-    pub fn parsed_inner(self) ->  T {
+    pub fn parsed_inner(self) -> T {
         match self {
             Parse::Parsed(inner) => inner,
             _ => unsafe { std::hint::unreachable_unchecked() },

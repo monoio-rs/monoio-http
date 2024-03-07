@@ -1,44 +1,38 @@
-use std::{collections::HashMap, io::{ Read, Write}, path::PathBuf };
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bytes::{Bytes, BytesMut};
 use http::HeaderMap;
-use tempfile::NamedTempFile;
+use monoio::fs::File;
 
-use super::{body::{Body, HttpBody, StreamHint}, error::HttpError};
+use super::{
+    body::{Body, HttpBody, StreamHint},
+    error::HttpError,
+};
 
-#[derive(Debug)]
-enum  Data {
+const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
+#[derive(Debug, Clone)]
+enum Data {
     InMemory(Bytes),
-    InFile(NamedTempFile)
+    InFile(PathBuf),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileHeader {
     filename: String,
     headers: HeaderMap,
-    size: usize,
-    data: Data 
-}
-
-#[derive(Debug)]
-pub enum RetData {
-    InMemory(Bytes),
-    InFile(PathBuf)
-}
-
-#[derive(Debug)]
-pub struct RetFileHeader {
-    filename: String,
-    headers: HeaderMap,
-    data: RetData 
+    data: Data,
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldHeader {
     pub value: String,
-    pub headers: HeaderMap
+    pub headers: HeaderMap,
 }
-
 
 #[derive(Debug)]
 pub struct ParsedMuliPartForm {
@@ -46,7 +40,7 @@ pub struct ParsedMuliPartForm {
     file: HashMap<String, Vec<FileHeader>>,
     boundary: String,
     first_part: bool,
-    closed: bool
+    closed: bool,
 }
 
 impl FieldHeader {
@@ -59,7 +53,7 @@ impl FieldHeader {
     }
 }
 
-impl RetFileHeader {
+impl FileHeader {
     pub fn get_filename(&self) -> String {
         self.filename.clone()
     }
@@ -68,8 +62,11 @@ impl RetFileHeader {
         &self.headers
     }
 
-    pub fn get_data(&self) -> &RetData {
-        &self.data
+    pub fn get_file_path(&self) -> Option<PathBuf> {
+        match &self.data {
+            Data::InMemory(_) => None,
+            Data::InFile(file) => Some(file.clone()),
+        }
     }
 }
 
@@ -90,68 +87,80 @@ impl ParsedMuliPartForm {
         }
     }
 
-    fn insert_field_value(&mut self, key: String,  value: String, headers: HeaderMap) {
-        self.value.entry(key).or_insert_with(Vec::new).push(FieldHeader { value, headers });
+    fn insert_field_value(&mut self, key: String, value: String, headers: HeaderMap) {
+        self.value
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(FieldHeader { value, headers });
     }
 
     fn insert_file(&mut self, key: String, file: FileHeader) {
         self.file.entry(key).or_insert_with(Vec::new).push(file);
     }
 
-    fn insert_file_data(&mut self, key: String, filename: String, headers: HeaderMap, size: usize, data: Data) {
-        self.insert_file(key, FileHeader { filename, headers, size, data });
+    fn insert_file_data(&mut self, key: String, filename: String, headers: HeaderMap, data: Data) {
+        self.insert_file(
+            key,
+            FileHeader {
+                filename,
+                headers,
+                data,
+            },
+        );
     }
 
-    pub fn  get_field_value(&self, key: &str) -> Option<Vec<FieldHeader>> {
+    pub fn get_field_value(&self, key: &str) -> Option<Vec<FieldHeader>> {
         self.value.get(key).map(|v| v.clone())
     }
 
-    pub fn get_file(&self, key: &str) -> Option<Vec<RetFileHeader>> {
+    pub fn get_file(&self, key: &str) -> Option<Vec<FileHeader>> {
         self.file.get(key).map(|v| {
-            v.iter().map(|file| {
-                let data = match &file.data {
-                    Data::InMemory(bytes) => RetData::InMemory(bytes.clone()),
-                    Data::InFile(file) => RetData::InFile(file.path().to_path_buf())
-                };
-                RetFileHeader {
-                    filename: file.filename.clone(),
-                    headers: file.headers.clone(),
-                    data
-                }
-            }).collect()
+            v.iter()
+                .map(|file| {
+                    let data = match &file.data {
+                        Data::InMemory(bytes) => Data::InMemory(bytes.clone()),
+                        Data::InFile(file) => Data::InFile(file.clone()),
+                    };
+                    FileHeader {
+                        filename: file.filename.clone(),
+                        headers: file.headers.clone(),
+                        data,
+                    }
+                })
+                .collect()
         })
     }
 
-    fn get_next_file(&mut self) -> Option<FileHeader> {
-        for file in self.file.values_mut() {
-            if let Some(file) = file.pop() {
-                return Some(file);
-            }
-        }
-        None
-    }
-
     fn get_next_file_key(&self) -> Option<String> {
-        for key in self.file.keys() {
-            return Some(key.clone());
-        }
-        None
+        self.file.keys().next().map(|k| k.clone())
     }
 
-    fn write_part(&self, mut buf: BytesMut, headers: HeaderMap) -> Result<BytesMut, HttpError> {
-
+    fn write_part(&mut self, mut buf: BytesMut, headers: HeaderMap) -> Result<BytesMut, HttpError> {
         if self.first_part == false {
             buf.extend_from_slice(format!("\r\n--{}\r\n", self.boundary).as_bytes());
         } else {
             buf.extend_from_slice(format!("--{}\r\n", self.boundary).as_bytes());
+            self.first_part = false;
         }
 
-        let mut keys = headers.keys().map(|k| k.to_string()).collect::<Vec<String>>();
+        let mut keys = headers
+            .keys()
+            .map(|k| k.to_string())
+            .collect::<Vec<String>>();
         keys.sort();
 
         for key in keys {
-            let value = headers.get(&key.clone()).unwrap();
-            buf.extend_from_slice(format!("{}: {:?}\r\n", key, value).as_bytes());
+            let header_value = headers.get(&key.clone()).unwrap();
+            match header_value.to_str() {
+                Ok(value) => {
+                    buf.extend_from_slice(format!("{}: {}\r\n", key, value).as_bytes());
+                }
+                Err(_) => {
+                    buf.extend_from_slice(format!("{}: ", key).as_bytes());
+                    buf.extend_from_slice(header_value.as_bytes());
+                    buf.extend_from_slice(format!("\r\n").as_bytes());
+                }
+            }
         }
 
         buf.extend_from_slice("\r\n".as_bytes());
@@ -161,12 +170,13 @@ impl ParsedMuliPartForm {
 
     fn write_forms(&mut self) -> Result<Option<Bytes>, HttpError> {
         let mut buf = BytesMut::new();
-        for (_, forms) in self.value.iter() {
+        let cloned_value = self.value.clone(); // Clone self.value outside of the loop
+        for (_, forms) in cloned_value.iter() {
             for form in forms {
                 let headers = form.headers.clone(); // Store the value of form.headers in a separate variable
                 buf = self.write_part(buf, headers.clone())?;
                 buf.extend_from_slice(form.value.as_bytes());
-            } 
+            }
         }
 
         self.value.clear();
@@ -174,26 +184,30 @@ impl ParsedMuliPartForm {
         Ok(Some(buf.freeze()))
     }
 
-    fn write_file(&mut self, key: String) -> Result<Option<Bytes>, HttpError> {
+    async fn write_file(&mut self, key: String) -> Result<Option<Bytes>, HttpError> {
         let mut buf = BytesMut::new();
-        for file in self.file.get(&key).unwrap() {
-            buf = self.write_part(buf,  file.headers.clone())?;
+        for file in self.file.get(&key).unwrap().clone() {
+            buf = self.write_part(buf, file.headers.clone())?;
 
             match &file.data {
                 Data::InMemory(bytes) => {
                     buf.extend_from_slice(bytes.as_ref());
-                },
-                Data::InFile(file) =>  {
-                    let mut file = file.reopen()?; 
-                    let mut chunk = vec![0; 1024 * 1024]; // 1 KB chunk
+                }
+                Data::InFile(file) => {
+                    let file = File::open(file).await?;
+                    let mut pos: u64 = 0;
+
                     loop {
-                        let n = file.read(&mut chunk)?;
-                        if n == 0 {
+                        let chunk = vec![0; 1024 * 1024]; // 1 KB chunk
+                        let (res, read_chunk) = file.read_at(chunk, pos).await;
+                        let bytes_written = res?;
+                        pos += bytes_written as u64;
+                        if bytes_written == 0 {
                             break;
                         }
-                        buf.extend_from_slice(&chunk[..n]);
+                        buf.extend_from_slice(&read_chunk[..(bytes_written as usize)]);
                     }
-               }
+                }
             };
         }
 
@@ -209,10 +223,12 @@ impl ParsedMuliPartForm {
         Ok(Some(buf.freeze()))
     }
 
-    pub async fn read_form(mut multer_multipart: multer::Multipart<'_>, boundary: String) -> Result<Self, HttpError>{
+    pub async fn read_form(
+        mut multer_multipart: multer::Multipart<'_>,
+        boundary: String,
+    ) -> Result<Self, HttpError> {
         let mut form = ParsedMuliPartForm::new(boundary);
         while let Some(mut field) = multer_multipart.next_field().await? {
-
             let name = field.name().unwrap_or_default().to_string();
             let file_name = field.file_name().unwrap_or_else(|| "").to_string();
             let headers = field.headers().clone();
@@ -220,28 +236,37 @@ impl ParsedMuliPartForm {
             if file_name == "" {
                 let value = field.bytes().await?.to_vec();
                 let value = String::from_utf8_lossy(&value).to_string();
+                println!("name: {:?}, Value: {:?}", name, value);
                 form.insert_field_value(name, value, headers);
                 continue;
             }
-            
-            let mut buf = BytesMut::new();
+
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let path = format!("/tmp/{}_{}.txt", file_name, timestamp);
+            let file = monoio::fs::File::create(path.clone()).await?;
+            let mut pos: u64 = 0;
+
             while let Some(bytes) = field.chunk().await? {
-                buf.extend_from_slice(&bytes);
+                let (res, _) = file.write_at(bytes, pos).await;
+                pos += res? as u64;
             }
 
-            let MAX_FILE_SIZE = 10 * 1024 * 1024;
-            let file_size = buf.len();
-
-            let data = if  file_size > MAX_FILE_SIZE {
-                let temp_file = tempfile::NamedTempFile::new().unwrap();
-                let mut file = temp_file.reopen()?;
-                file.write_all(&buf)?;
-                file.flush()?;
-                Data::InFile(temp_file)
+            let data = if (pos as usize) < MAX_FILE_SIZE {
+                let _ = file.close().await;
+                let buf = BytesMut::with_capacity(pos as usize);
+                let file = monoio::fs::File::open(path.clone()).await?;
+                let (res, ret_buf) = file.read_exact_at(buf, 0).await;
+                res?;
+                Data::InMemory(ret_buf.freeze())
             } else {
-                Data::InMemory(buf.freeze())
+                Data::InFile(PathBuf::from(path))
             };
-            form.insert_file_data(name, file_name, headers, file_size, data);
+
+            form.insert_file_data(name, file_name, headers, data);
         }
 
         Ok(form)
@@ -252,17 +277,24 @@ impl Body for ParsedMuliPartForm {
     type Data = Bytes;
     type Error = HttpError;
 
-    async fn next_data(&mut self) ->  Option<Result<Self::Data, Self::Error>> {
+    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
         if self.value.len() > 0 {
-            return self.write_forms().map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
+            return self
+                .write_forms()
+                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
         }
 
         if let Some(key) = self.get_next_file_key() {
-            return self.write_file(key).map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));;
+            return self
+                .write_file(key)
+                .await
+                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
         }
 
         if !self.closed && self.value.is_empty() && self.file.is_empty() {
-            return self.close_multipart().map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));;
+            return self
+                .close_multipart()
+                .map_or_else(|e| Some(Err(e)), |v| v.map(|v| Ok(v)));
         }
         None
     }
@@ -271,4 +303,3 @@ impl Body for ParsedMuliPartForm {
         StreamHint::Stream
     }
 }
-

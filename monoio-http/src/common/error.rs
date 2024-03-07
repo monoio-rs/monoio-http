@@ -39,7 +39,6 @@ pub enum HttpError {
     SerDeError(#[from] serde_urlencoded::de::Error),
     #[error("Multer Error")]
     MulterError(#[from] multer::Error),
- 
 }
 
 impl Clone for HttpError {

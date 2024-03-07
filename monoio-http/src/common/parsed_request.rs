@@ -4,11 +4,10 @@ use bytes::Bytes;
 use cookie::{Cookie, CookieJar};
 pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 
-use super::body::HttpBodyStream;
-use super::multipart::{FieldHeader, ParsedMuliPartForm, RetFileHeader};
 use super::{
-    body::{Body, BodyExt, FixedBody},
+    body::{Body, BodyExt, FixedBody, HttpBodyStream},
     error::{ExtractError, HttpError},
+    multipart::{FieldHeader, FileHeader, ParsedMuliPartForm},
     request::Request,
     Parse, QueryMap,
 };
@@ -30,7 +29,7 @@ impl<P> From<Request<P>> for ParsedRequest<P> {
             cookie_jar: RefCell::new(Parse::Unparsed),
             url_params: RefCell::new(Parse::Unparsed),
             body_url_params: RefCell::new(Parse::Unparsed),
-            multipart_params: RefCell::new(Parse::Unparsed), 
+            multipart_params: RefCell::new(Parse::Unparsed),
         }
     }
 }
@@ -42,7 +41,7 @@ impl<P> ParsedRequest<P> {
             cookie_jar: RefCell::new(Parse::Unparsed),
             url_params: RefCell::new(Parse::Unparsed),
             body_url_params: RefCell::new(Parse::Unparsed),
-            multipart_params: RefCell::new(Parse::Unparsed)
+            multipart_params: RefCell::new(Parse::Unparsed),
         }
     }
 
@@ -61,8 +60,7 @@ impl<P> ParsedRequest<P> {
     }
 }
 
-impl<P: From<ParsedMuliPartForm>> ParsedRequest<P> 
-{
+impl<P: From<ParsedMuliPartForm>> ParsedRequest<P> {
     pub fn into_multipart_body_request(self) -> Request<P> {
         self.serialize_cookies_into_header();
         if self.multipart_params.borrow().is_parsed() {
@@ -72,7 +70,7 @@ impl<P: From<ParsedMuliPartForm>> ParsedRequest<P>
         } else {
             self.inner.into_inner()
         }
-   }
+    }
 }
 
 impl<P> ParsedRequest<P> {
@@ -378,25 +376,27 @@ where
                     .unwrap_or_default()
                     .to_string();
 
-                let temp_req = Request::new(P::fixed_body(None));
-                let orig_req = unsafe {
+                let orig_body = unsafe {
                     let orig_req = self.inner.get();
                     let orig_copy = std::ptr::read(orig_req);
+                    let (orig_part, orig_body) = orig_copy.into_parts();
+                    let temp_req = Request::from_parts(orig_part, P::fixed_body(None));
                     std::ptr::write(orig_req, temp_req);
-                    orig_copy
+                    orig_body
                 };
-
-                let (_orig_parts, orig_body) = orig_req.into_parts();
 
                 let body_stream: HttpBodyStream = orig_body.into();
 
                 let constraints_to_use =
                     user_constraints.unwrap_or_else(multer::Constraints::default);
-                let multer =
-                    multer::Multipart::with_constraints(body_stream, boundary.clone(), constraints_to_use);
+                let multer = multer::Multipart::with_constraints(
+                    body_stream,
+                    boundary.clone(),
+                    constraints_to_use,
+                );
 
-               let parsed_multi_part = ParsedMuliPartForm::read_form(multer, boundary).await?; 
-               *self.multipart_params.borrow_mut() = Parse::Parsed(parsed_multi_part);
+                let parsed_multi_part = ParsedMuliPartForm::read_form(multer, boundary).await?;
+                *self.multipart_params.borrow_mut() = Parse::Parsed(parsed_multi_part);
                 Ok(Ref::map(self.multipart_params.borrow(), |params| {
                     params.parsed_inner_ref()
                 }))
@@ -408,9 +408,15 @@ where
         }
     }
 
-    pub fn get_multipart_field_param(&self, name: &str) -> Option<Vec<FieldHeader>> {
-        if self.multipart_params.borrow().is_unparsed_or_failed() {
+    pub async fn get_multipart_field_param(&self, name: &str) -> Option<Vec<FieldHeader>> {
+        if self.multipart_params.borrow().is_parsing_failed() {
             None
+        } else if self.multipart_params.borrow().is_unparsed() {
+            // Return none if parsing fails
+            self.parse_multipart_params(None)
+                .await
+                .ok()
+                .and_then(|p| p.get_field_value(name))
         } else {
             self.multipart_params
                 .borrow()
@@ -419,9 +425,15 @@ where
         }
     }
 
-    pub fn get_multipart_file_param(&self, name: &str) -> Option<Vec<RetFileHeader>> {
-        if self.multipart_params.borrow().is_unparsed_or_failed() {
+    pub async fn get_multipart_file_param(&self, name: &str) -> Option<Vec<FileHeader>> {
+        if self.multipart_params.borrow().is_parsing_failed() {
             None
+        } else if self.multipart_params.borrow().is_unparsed() {
+            // Return none if parsing fails
+            self.parse_multipart_params(None)
+                .await
+                .ok()
+                .and_then(|p| p.get_file(name))
         } else {
             self.multipart_params
                 .borrow()
@@ -433,7 +445,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Read};
+    use std::{
+        fs::File,
+        io::{Cursor, Read, Write},
+    };
 
     use http::header::{HeaderValue, COOKIE};
 
@@ -566,36 +581,6 @@ mod tests {
         request
     }
 
-    fn create_request_multi_part() -> Request<HttpBody> {
-        let mut multipart = multipart::client::lazy::Multipart::new();
-        multipart.add_text("field1", "value1");
-        multipart.add_text("field2", "value2");
-
-        let file_data = "Hello, World!".as_bytes();
-        let file_mime = Some(mime::TEXT_PLAIN);
-        multipart.add_stream(
-            "file",
-            Cursor::new(file_data),
-            Some("HelloWorld.txt"),
-            file_mime,
-        );
-
-        let mut p = multipart.prepare().unwrap();
-        let boundary = p.boundary();
-        let content_type = format!("multipart/form-data; boundary={}", boundary);
-        let mut buf = Vec::new();
-        p.read_to_end(&mut buf).unwrap();
-
-        let body = HttpBody::fixed_body(Some(Bytes::from(buf)));
-        let mut request = Request::new(body);
-        request.headers_mut().insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_str(content_type.as_str()).unwrap(),
-        );
-
-        request
-    }
-
     #[monoio::test_all]
     async fn test_request_url_encoded_body_parse() {
         let request = create_request_with_url_encoded_body();
@@ -625,7 +610,10 @@ mod tests {
         let request = create_request_with_url_encoded_body();
         let parsed_request = ParsedRequest::new(request);
 
-        parsed_request.parse_body_url_encoded_params().await.unwrap();
+        parsed_request
+            .parse_body_url_encoded_params()
+            .await
+            .unwrap();
 
         let res1 = parsed_request.get_body_url_param("key1");
         assert_eq!(res1, Some("value1".to_string()));
@@ -636,11 +624,17 @@ mod tests {
         );
     }
 
-    #[monoio::test_all]
-    async fn test_request_multi_part_parse_async() {
-        let request = create_request_multi_part();
+    fn create_request_multi_part() -> Request<HttpBody> {
+        let body = b"--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"field2\"\r\n\r\nvalue2\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"field1\"\r\n\r\nvalue1\r\n--iYJaNWIc97YKxZYB\r\ncontent-disposition: form-data; name=\"file\"; filename=\"HelloWorld.txt\"\r\ncontent-type: text/plain\r\n\r\nHello, World!\nHello, World!\nHello, World!\nHello, World!\nHello, World!\nHello, World!\n\r\n--iYJaNWIc97YKxZYB--\r\n";
 
-        let parsed_request = ParsedRequest::new(request);
+        let boundary = "iYJaNWIc97YKxZYB";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        let body = HttpBody::fixed_body(Some(Bytes::from(body.to_vec())));
+        let mut request = Request::new(body);
+        request.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_str(content_type.as_str()).unwrap(),
+        );
 
         let mut multipart_struct = parsed_request.parse_multipart_async(None).unwrap();
 
