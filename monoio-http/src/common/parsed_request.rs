@@ -7,7 +7,7 @@ pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 use super::{
     body::{Body, BodyExt, FixedBody, HttpBodyStream},
     error::{ExtractError, HttpError},
-    multipart::{FieldHeader, FileHeader, ParsedMuliPartForm},
+    multipart::{FieldHeader, FileHeader, ParsedMultiPartForm},
     request::Request,
     Parse, QueryMap,
 };
@@ -18,7 +18,7 @@ pub struct ParsedRequest<P> {
     cookie_jar: RefCell<Parse<CookieJar>>,
     url_params: RefCell<Parse<QueryMap>>,
     body_url_params: RefCell<Parse<QueryMap>>,
-    multipart_params: RefCell<Parse<ParsedMuliPartForm>>,
+    multipart_params: RefCell<Parse<ParsedMultiPartForm>>,
 }
 
 impl<P> From<Request<P>> for ParsedRequest<P> {
@@ -60,7 +60,7 @@ impl<P> ParsedRequest<P> {
     }
 }
 
-impl<P: From<ParsedMuliPartForm>> ParsedRequest<P> {
+impl<P: From<ParsedMultiPartForm>> ParsedRequest<P> {
     pub fn into_multipart_body_request(self) -> Request<P> {
         self.serialize_cookies_into_header();
         if self.multipart_params.borrow().is_parsed() {
@@ -279,7 +279,7 @@ where
         &self,
         user_constraints: Option<multer::Constraints>,
         max_file_size: Option<u64>,
-    ) -> Result<Ref<ParsedMuliPartForm>, HttpError> {
+    ) -> Result<Ref<ParsedMultiPartForm>, HttpError> {
         if let Some(content_type) = self.inner().headers().get("Content-Type") {
             let content_type_str = content_type
                 .to_str()
@@ -317,7 +317,7 @@ where
                 let max_file_size = max_file_size.unwrap_or(super::multipart::MAX_FILE_SIZE);
 
                 let parsed_multi_part =
-                    ParsedMuliPartForm::read_form(multer, boundary, max_file_size).await?;
+                    ParsedMultiPartForm::read_form(multer, boundary, max_file_size).await?;
                 *self.multipart_params.borrow_mut() = Parse::Parsed(parsed_multi_part);
                 Ok(Ref::map(self.multipart_params.borrow(), |params| {
                     params.parsed_inner_ref()
@@ -361,6 +361,42 @@ where
                 .borrow()
                 .parsed_inner_ref()
                 .get_file(name)
+        }
+    }
+
+    pub async fn get_multipart_file_param_keys(&self) -> Option<Vec<String>> {
+        if self.multipart_params.borrow().is_parsing_failed() {
+            None
+        } else if self.multipart_params.borrow().is_unparsed() {
+            // Return none if parsing fails
+            self.parse_multipart_params(None, None)
+                .await
+                .ok()
+                .map(|p| Some(p.get_files_keys()))
+                .unwrap_or_default()
+        } else {
+            Some(self.multipart_params
+                .borrow()
+                .parsed_inner_ref()
+                .get_files_keys())
+        }
+    }
+
+    pub async fn get_multipart_field_param_keys(&self) -> Option<Vec<String>> {
+        if self.multipart_params.borrow().is_parsing_failed() {
+            None
+        } else if self.multipart_params.borrow().is_unparsed() {
+            // Return none if parsing fails
+            self.parse_multipart_params(None, None)
+                .await
+                .ok()
+                .map(|p| Some(p.get_fields_keys()))
+                .unwrap_or_default()
+        } else {
+            Some(self.multipart_params
+                .borrow()
+                .parsed_inner_ref()
+                .get_fields_keys())
         }
     }
 }

@@ -35,7 +35,7 @@ pub struct FieldHeader {
 }
 
 #[derive(Debug)]
-pub struct ParsedMuliPartForm {
+pub struct ParsedMultiPartForm {
     value: HashMap<String, Vec<FieldHeader>>,
     file: HashMap<String, Vec<FileHeader>>,
     boundary: String,
@@ -71,13 +71,13 @@ impl FileHeader {
     }
 }
 
-impl From<ParsedMuliPartForm> for HttpBody {
-    fn from(p: ParsedMuliPartForm) -> Self {
+impl From<ParsedMultiPartForm> for HttpBody {
+    fn from(p: ParsedMultiPartForm) -> Self {
         Self::Multipart(p)
     }
 }
 
-impl ParsedMuliPartForm {
+impl ParsedMultiPartForm {
     pub fn new(boundary: String, max_file_size: u64) -> Self {
         Self {
             value: HashMap::new(),
@@ -131,6 +131,14 @@ impl ParsedMuliPartForm {
                 })
                 .collect()
         })
+    }
+
+    pub fn get_fields_keys(&self) -> Vec<String> {
+        self.value.keys().cloned().collect()
+    }
+
+    pub fn get_files_keys(&self) -> Vec<String> {
+        self.file.keys().cloned().collect()
     }
 
     fn get_next_file_key(&self) -> Option<String> {
@@ -230,7 +238,7 @@ impl ParsedMuliPartForm {
         boundary: String,
         max_file_size: u64,
     ) -> Result<Self, HttpError> {
-        let mut form = ParsedMuliPartForm::new(boundary, max_file_size);
+        let mut form = ParsedMultiPartForm::new(boundary, max_file_size);
         while let Some(mut field) = multer_multipart.next_field().await? {
             let name = field.name().unwrap_or_default().to_string();
             let file_name = field.file_name().unwrap_or("").to_string();
@@ -276,7 +284,7 @@ impl ParsedMuliPartForm {
     }
 }
 
-impl Body for ParsedMuliPartForm {
+impl Body for ParsedMultiPartForm {
     type Data = Bytes;
     type Error = HttpError;
 

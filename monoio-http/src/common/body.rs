@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 
 use super::{
     error::{EncodeDecodeError, HttpError},
-    multipart::ParsedMuliPartForm,
+    multipart::ParsedMultiPartForm,
 };
 use crate::{
     common::{request::Request, response::Response},
@@ -200,7 +200,7 @@ pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
     H2(RecvStream),
-    Multipart(ParsedMuliPartForm),
+    Multipart(ParsedMultiPartForm),
 }
 
 impl HttpBody {
