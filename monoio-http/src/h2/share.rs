@@ -475,7 +475,11 @@ impl Body for RecvStream {
     type Error = crate::h2::Error;
 
     async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
-        self.data().await
+        self.data().await.map(|res| {
+            res.and_then(|bytes| {
+                self.flow_control().release_capacity(bytes.len()).map(|_| bytes)
+            })
+        })
     }
 
     fn stream_hint(&self) -> crate::common::body::StreamHint {
