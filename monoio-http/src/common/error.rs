@@ -15,6 +15,7 @@ use crate::h1::{
 pub enum ExtractError {
     #[error("Uninitialized cookie jar")]
     UninitializedCookieJar,
+    #[cfg(feature = "parsed")]
     #[error("http cookie parsing error {0}")]
     CookieParseError(#[from] cookie::ParseError),
     #[error("Invalid Header Value")]
@@ -39,6 +40,7 @@ pub enum HttpError {
     IOError(#[from] std::io::Error),
     #[error("Cookie error {0}")]
     CookieError(#[from] ExtractError),
+    #[cfg(feature = "parsed")]
     #[error("SerDe error {0}")]
     SerDeError(#[from] serde_urlencoded::de::Error),
 }
