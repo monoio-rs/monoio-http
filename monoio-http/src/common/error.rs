@@ -43,6 +43,9 @@ pub enum HttpError {
     #[cfg(feature = "parsed")]
     #[error("SerDe error {0}")]
     SerDeError(#[from] serde_urlencoded::de::Error),
+    #[cfg(feature = "parsed")]
+    #[error("Multer Error")]
+    MulterError(#[from] multer::Error),
 }
 
 impl From<Infallible> for HttpError {
