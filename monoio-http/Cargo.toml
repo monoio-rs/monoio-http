@@ -9,7 +9,7 @@ edition = "2021"
 keywords = ["monoio", "http", "async"]
 license = "MIT/Apache-2.0"
 name = "monoio-http"
-version = "0.3.5"
+version = "0.3.6"
 
 [dependencies]
 monoio = { workspace = true }
@@ -22,11 +22,6 @@ bytes = { workspace = true }
 http = { workspace = true }
 local-sync = { workspace = true }
 thiserror = { workspace = true }
-cookie = { version = "0.18.0", features = ["percent-encode"] }
-serde_urlencoded = "0.7"
-multipart = "0.18"
-mime = "0.3"
-multer = "3.0.0"
 
 httparse = "1"
 memchr = "2.5"
@@ -41,6 +36,12 @@ fnv = "1.0.5"
 slab = "0.4.2"
 indexmap = { version = "1.5.2", features = ["std"] }
 smallvec = "1"
+
+cookie = { version = "0.18.0", features = ["percent-encode"], optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
+multipart = { version = "0.18", optional = true }
+mime = { version = "0.3", optional = true }
+multer = { version = "3.0.0", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -65,6 +66,8 @@ stream = []
 # anything besides experimentation. Definitely **do not** publish a crate that
 # depends on this feature.
 unstable = []
+
+parsed = ["dep:cookie", "dep:serde_urlencoded", "dep:multipart", "dep:mime", "dep:multer"]
 
 [lib]
 doctest = false
