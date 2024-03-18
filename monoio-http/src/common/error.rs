@@ -1,4 +1,8 @@
-use std::io::{Error, ErrorKind};
+use std::{
+    convert::Infallible,
+    hint::unreachable_unchecked,
+    io::{Error, ErrorKind},
+};
 
 use thiserror::Error as ThisError;
 
@@ -17,8 +21,8 @@ pub enum ExtractError {
     InvalidHeaderValue,
     #[error("Invalid content type")]
     InvalidContentType,
-    #[error("Missing URL")]
-    MissingURL,
+    #[error("Previous returned error")]
+    Previous,
 }
 
 #[derive(ThisError, Debug)]
@@ -37,6 +41,12 @@ pub enum HttpError {
     CookieError(#[from] ExtractError),
     #[error("SerDe error {0}")]
     SerDeError(#[from] serde_urlencoded::de::Error),
+}
+
+impl From<Infallible> for HttpError {
+    fn from(_: Infallible) -> Self {
+        unsafe { unreachable_unchecked() }
+    }
 }
 
 impl Clone for HttpError {

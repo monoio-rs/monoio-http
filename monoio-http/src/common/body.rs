@@ -1,5 +1,6 @@
 use std::{
     cell::UnsafeCell,
+    convert::Infallible,
     io::{Cursor, Read},
     task::{ready, Poll},
 };
@@ -36,6 +37,19 @@ pub trait Body {
 
     fn next_data(&mut self) -> impl Future<Output = Option<Result<Self::Data, Self::Error>>>;
     fn stream_hint(&self) -> StreamHint;
+}
+
+impl Body for () {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
+        Some(Ok(Bytes::new()))
+    }
+
+    fn stream_hint(&self) -> StreamHint {
+        StreamHint::Fixed
+    }
 }
 
 impl<T: Body> Body for &mut T {
