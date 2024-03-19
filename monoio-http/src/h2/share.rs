@@ -477,7 +477,9 @@ impl Body for RecvStream {
     async fn next_data(&mut self) -> Option<Result<Self::Data, Self::Error>> {
         self.data().await.map(|res| {
             res.and_then(|bytes| {
-                self.flow_control().release_capacity(bytes.len()).map(|_| bytes)
+                self.flow_control()
+                    .release_capacity(bytes.len())
+                    .map(|_| bytes)
             })
         })
     }
