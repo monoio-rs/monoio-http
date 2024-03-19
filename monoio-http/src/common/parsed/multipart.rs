@@ -285,7 +285,7 @@ impl ParsedMultiPartForm {
 
 // Converts the ParsedMultiPartForm into a HttpBody stream by reconstructing the multipart form
 // body. The values which are small in size are returned first, followed by the file data which is
-// on the disk for every subsequent next_data call.  
+// on the disk for every subsequent next_data call.
 impl Body for ParsedMultiPartForm {
     type Data = Bytes;
     type Error = HttpError;

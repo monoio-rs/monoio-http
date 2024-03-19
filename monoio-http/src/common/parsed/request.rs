@@ -4,11 +4,12 @@ use bytes::{Bytes, BytesMut};
 use cookie::{Cookie, CookieJar};
 pub use http::request::{Builder as RequestBuilder, Parts as RequestHead};
 use http::{
-    header::{CONTENT_LENGTH, CONTENT_TYPE, COOKIE, TRANSFER_ENCODING},
+    header::{CONTENT_LENGTH, CONTENT_TYPE, COOKIE},
     Request,
 };
 use mime::{APPLICATION_WWW_FORM_URLENCODED, MULTIPART_FORM_DATA};
 
+use super::multipart::{FieldHeader, FileHeader, ParsedMultiPartForm};
 use crate::common::{
     body::{Body, FixedBody, HttpBodyStream, StreamHint},
     error::{ExtractError, HttpError},
@@ -16,14 +17,12 @@ use crate::common::{
     IntoParts,
 };
 
-use super::multipart::{FieldHeader, FileHeader, ParsedMultiPartForm};
-
 pub struct ParsedRequest<P> {
     inner: Request<P>,
     cookie_jar: UnsafeCell<Parse<CookieJar>>,
     url_params: UnsafeCell<Parse<QueryMap>>,
     body_form_params: Parse<QueryMap>,
-    multipart_params: Parse<ParsedMultiPartForm>, 
+    multipart_params: Parse<ParsedMultiPartForm>,
     body_cache: Option<Bytes>,
 }
 
@@ -54,8 +53,6 @@ impl<P> ParsedRequest<P> {
         }
     }
 }
-
-
 
 impl<P> ParsedRequest<P> {
     #[inline]
@@ -99,8 +96,8 @@ impl<P: FixedBody + From<ParsedMultiPartForm>> ParsedRequest<P> {
             // Multipart form data is transfered as a stream, chunked body for H1.
             self.inner.headers_mut().remove(CONTENT_LENGTH);
             let body = P::from(self.multipart_params.unwrap());
-            let (parts, _) = self.inner.into_parts(); 
-            return Request::from_parts(parts, body)
+            let (parts, _) = self.inner.into_parts();
+            return Request::from_parts(parts, body);
         }
         self.inner
     }
@@ -347,12 +344,11 @@ where
     }
 }
 
-
 impl<P> ParsedRequest<P>
 where
     P: Into<HttpBodyStream> + 'static + FixedBody,
 {
-    /// See https://docs.rs/multer/latest/multer/struct.Constraints.html for constraints. 
+    /// See https://docs.rs/multer/latest/multer/struct.Constraints.html for constraints.
     /// Size limits for whole stream body, per field, allowed fields etc.
     /// Any field with a file size greater than max_file_size will be stored on disk.
     /// Default max_file_size is 10MB.
@@ -361,7 +357,6 @@ where
         user_constraints: Option<multer::Constraints>,
         max_file_size: Option<u64>,
     ) -> Result<&mut ParsedMultiPartForm, HttpError> {
-
         if self.multipart_params.is_parsed() {
             return Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() });
         }
@@ -375,13 +370,20 @@ where
         let boundary = match self.inner.headers().get(CONTENT_TYPE) {
             Some(content_type)
                 if content_type
-                .to_str()
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .unwrap_or_default().as_bytes()
-                    == MULTIPART_FORM_DATA.as_ref().as_bytes() => {
-                        content_type.to_str().ok().and_then(|s| s.split("boundary=").nth(1)).unwrap_or_default().to_string()
-                    }
+                    .to_str()
+                    .ok()
+                    .and_then(|s| s.split(';').next())
+                    .unwrap_or_default()
+                    .as_bytes()
+                    == MULTIPART_FORM_DATA.as_ref().as_bytes() =>
+            {
+                content_type
+                    .to_str()
+                    .ok()
+                    .and_then(|s| s.split("boundary=").nth(1))
+                    .unwrap_or_default()
+                    .to_string()
+            }
             _ => {
                 self.multipart_params = Parse::Failed;
                 return Err(ExtractError::InvalidContentType.into());
@@ -392,11 +394,8 @@ where
         let body_stream: HttpBodyStream = body.into();
 
         let constraints_to_use = user_constraints.unwrap_or_default();
-        let multer = multer::Multipart::with_constraints(
-            body_stream,
-            boundary.clone(),
-            constraints_to_use,
-        );
+        let multer =
+            multer::Multipart::with_constraints(body_stream, boundary.clone(), constraints_to_use);
 
         let max_file_size = max_file_size.unwrap_or(super::multipart::MAX_FILE_SIZE);
 
@@ -408,10 +407,12 @@ where
         Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() })
     }
 
-    pub async fn parse_get_multipart_field_param(&mut self, name: &str) -> Result<Option<Vec<FieldHeader>>, HttpError> {
+    pub async fn parse_get_multipart_field_param(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<Vec<FieldHeader>>, HttpError> {
         self.parse_multipart_params(None, None).await?;
-        Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }
-            .get_field_value(name))
+        Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }.get_field_value(name))
     }
 
     pub fn get_multipart_field_param(&self, name: &str) -> Option<Vec<FieldHeader>> {
@@ -421,10 +422,12 @@ where
         }
     }
 
-    pub async fn parse_get_multipart_file_param(&mut self, name: &str) -> Result<Option<Vec<FileHeader>>, HttpError> {
+    pub async fn parse_get_multipart_file_param(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<Vec<FileHeader>>, HttpError> {
         self.parse_multipart_params(None, None).await?;
-        Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }
-            .get_file(name))
+        Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }.get_file(name))
     }
 
     pub fn get_multipart_file_param(&self, name: &str) -> Option<Vec<FileHeader>> {
@@ -437,14 +440,14 @@ where
     pub fn get_multipart_value_keys(&self) -> Option<impl Iterator<Item = &String>> {
         match &self.multipart_params {
             Parse::Parsed(ref map) => Some(map.value_keys()),
-            _ => None 
+            _ => None,
         }
     }
 
     pub fn get_multipart_file_keys(&self) -> Option<impl Iterator<Item = &String>> {
         match &self.multipart_params {
             Parse::Parsed(ref map) => Some(map.file_keys()),
-            _ =>  None
+            _ => None,
         }
     }
 }
@@ -702,14 +705,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = parsed_request
-            .get_multipart_field_param("field1")
-            .unwrap();
+        let result = parsed_request.get_multipart_field_param("field1").unwrap();
         assert_eq!(result[0].value, "value1");
 
-        let result = parsed_request
-            .get_multipart_field_param("field2")
-            .unwrap();
+        let result = parsed_request.get_multipart_field_param("field2").unwrap();
         assert_eq!(result[0].value, "value2");
 
         let req_mp = parsed_request.into_http_request();
@@ -749,17 +748,13 @@ mod tests {
             .await
             .unwrap();
 
-        let result = parsed_request
-            .get_multipart_file_param("file1")
-            .unwrap();
+        let result = parsed_request.get_multipart_file_param("file1").unwrap();
 
         assert_eq!(result[0].get_filename(), "File1.txt");
         let path = result[0].get_file_path().unwrap();
         assert_eq!(&read_file(path), b"Hello from world1.");
 
-        let result = parsed_request
-            .get_multipart_file_param("file2")
-            .unwrap();
+        let result = parsed_request.get_multipart_file_param("file2").unwrap();
         assert_eq!(result[0].get_filename(), "File2.txt");
         let path = result[0].get_file_path().unwrap();
         assert_eq!(&read_file(path), b"Hello from world2.");
