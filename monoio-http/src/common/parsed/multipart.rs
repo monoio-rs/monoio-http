@@ -71,11 +71,11 @@ impl FileHeader {
     }
 }
 
-// impl From<ParsedMultiPartForm> for HttpBody {
-//     fn from(p: ParsedMultiPartForm) -> Self {
-//         Self::Multipart(p)
-//     }
-// }
+impl From<ParsedMultiPartForm> for HttpBody {
+    fn from(p: ParsedMultiPartForm) -> Self {
+        Self::Multipart(p)
+    }
+}
 
 impl ParsedMultiPartForm {
     pub fn new(boundary: String, max_file_size: u64) -> Self {
@@ -247,7 +247,6 @@ impl ParsedMultiPartForm {
             if file_name.is_empty() {
                 let value = field.bytes().await?.to_vec();
                 let value = String::from_utf8_lossy(&value).to_string();
-                println!("name: {:?}, Value: {:?}", name, value);
                 form.insert_field_value(name, value, headers);
                 continue;
             }
@@ -284,6 +283,9 @@ impl ParsedMultiPartForm {
     }
 }
 
+// Converts the ParsedMultiPartForm into a HttpBody stream by reconstructing the multipart form
+// body. The values which are small in size are returned first, followed by the file data which is
+// on the disk for every subsequent next_data call.  
 impl Body for ParsedMultiPartForm {
     type Data = Bytes;
     type Error = HttpError;
