@@ -11,7 +11,7 @@ use mime::APPLICATION_WWW_FORM_URLENCODED;
 
 use crate::common::{
     body::{Body, FixedBody, HttpBodyStream, StreamHint},
-    error::{ExtractError, HttpError},
+    error::{HttpError, ParseError},
     parsed::{Parse, QueryMap},
     IntoParts,
 };
@@ -103,13 +103,13 @@ impl<P: crate::common::body::FixedBody> IntoParts for ParsedRequest<P> {
 // URI parsing methods
 impl<P> ParsedRequest<P> {
     /// Parse the URL parameters into a QueryMap.
-    pub fn parse_url_params(&self) -> Result<(), HttpError> {
+    pub fn parse_url_params(&self) -> Result<(), ParseError> {
         let url_params = unsafe { &mut *self.url_params.get() };
         if url_params.is_parsed() {
             return Ok(());
         }
         if url_params.is_failed() {
-            return Err(ExtractError::Previous.into());
+            return Err(ParseError::Previous);
         }
 
         let uri = self.inner.uri();
@@ -128,7 +128,7 @@ impl<P> ParsedRequest<P> {
 
     /// Try parse if not parsed before, then get the value of the URL parameter.
     #[inline]
-    pub fn get_url_param(&self, name: &str) -> Result<Option<String>, HttpError> {
+    pub fn get_url_param(&self, name: &str) -> Result<Option<String>, ParseError> {
         self.parse_url_params()?;
         unsafe {
             let parsed = &*self.url_params.get();
@@ -143,20 +143,20 @@ impl<P> ParsedRequest<P> {
 
 impl<P> ParsedRequest<P> {
     /// Parse the cookies into a CookieJar.
-    pub fn parse_cookies_params(&self) -> Result<(), HttpError> {
+    pub fn parse_cookies_params(&self) -> Result<(), ParseError> {
         let cookie_jar = unsafe { &mut *self.cookie_jar.get() };
         if cookie_jar.is_parsed() {
             return Ok(());
         }
         if cookie_jar.is_failed() {
-            return Err(ExtractError::Previous.into());
+            return Err(ParseError::Previous);
         }
 
         let mut jar = CookieJar::new();
         if let Some(cookie_header) = self.inner.headers().get(COOKIE) {
             let cookie_str = cookie_header.to_str().map_err(|_| {
                 *cookie_jar = Parse::Failed;
-                ExtractError::InvalidHeaderValue
+                ParseError::InvalidHeaderValue
             })?;
             // TODO: maybe we should use split_parse_encoded?
             for cookie in Cookie::split_parse(cookie_str) {
@@ -164,7 +164,7 @@ impl<P> ParsedRequest<P> {
                     Ok(c) => c,
                     Err(_) => {
                         *cookie_jar = Parse::Failed;
-                        return Err(ExtractError::InvalidHeaderValue.into());
+                        return Err(ParseError::InvalidHeaderValue);
                     }
                 };
                 jar.add_original(cookie.into_owned());
@@ -178,7 +178,7 @@ impl<P> ParsedRequest<P> {
     /// Set a cookie into the CookieJar.
     /// Note: if the cookies are not parsed before, this method will parse the cookies first.
     #[inline]
-    pub fn set_cookie_param(&self, cookie: Cookie<'static>) -> Result<(), HttpError> {
+    pub fn set_cookie_param(&self, cookie: Cookie<'static>) -> Result<(), ParseError> {
         self.parse_cookies_params()?;
         unsafe {
             let parsed = &mut *self.cookie_jar.get();
@@ -190,7 +190,7 @@ impl<P> ParsedRequest<P> {
     /// Get a cookie from the CookieJar.
     /// Note: if the cookies are not parsed before, this method will parse the cookies first.
     #[inline]
-    pub fn get_cookie_param(&self, name: &str) -> Result<Option<&Cookie<'static>>, HttpError> {
+    pub fn get_cookie_param(&self, name: &str) -> Result<Option<&Cookie<'static>>, ParseError> {
         self.parse_cookies_params()?;
         unsafe {
             let parsed = &*self.cookie_jar.get();
@@ -218,12 +218,12 @@ where
     P: Body<Data = Bytes, Error = HttpError> + FixedBody + Sized,
 {
     /// Deserializes"x-www-form-urlencoded" body into a QueryMap.
-    pub async fn parse_body_url_encoded_params(&mut self) -> Result<&mut QueryMap, HttpError> {
+    pub async fn parse_body_url_encoded_params(&mut self) -> Result<&mut QueryMap, ParseError> {
         if self.body_form_params.is_parsed() {
             return Ok(unsafe { self.body_form_params.as_mut().unwrap_unchecked() });
         }
         if self.body_form_params.is_failed() {
-            return Err(ExtractError::Previous.into());
+            return Err(ParseError::Previous);
         }
 
         match self.inner.headers().get(CONTENT_TYPE) {
@@ -232,7 +232,7 @@ where
                     == APPLICATION_WWW_FORM_URLENCODED.as_ref().as_bytes() => {}
             _ => {
                 self.body_form_params = Parse::Failed;
-                return Err(ExtractError::InvalidContentType.into());
+                return Err(ParseError::InvalidContentType);
             }
         }
         let data = match self.inner.body_mut().stream_hint() {
@@ -267,7 +267,7 @@ where
     pub async fn parse_get_body_url_encoded_param(
         &mut self,
         name: &str,
-    ) -> Result<Option<&str>, HttpError> {
+    ) -> Result<Option<&str>, ParseError> {
         self.parse_body_url_encoded_params().await?;
         Ok(unsafe { self.body_form_params.as_ref().unwrap_unchecked() }
             .get(name)
@@ -297,7 +297,7 @@ where
     pub fn parse_multipart_async<'a>(
         self,
         user_constraints: Option<multer::Constraints>,
-    ) -> Result<multer::Multipart<'a>, HttpError> {
+    ) -> Result<multer::Multipart<'a>, ParseError> {
         if let Some(content_type) = self.inner.headers().get("Content-Type") {
             let content_type_str = content_type
                 .to_str()
@@ -323,10 +323,10 @@ where
                     multer::Multipart::with_constraints(body_stream, boundary, constraints_to_use);
                 Ok(m)
             } else {
-                Err(ExtractError::InvalidContentType.into())
+                Err(ParseError::InvalidContentType)
             }
         } else {
-            Err(ExtractError::InvalidHeaderValue.into())
+            Err(ParseError::InvalidHeaderValue)
         }
     }
 }
