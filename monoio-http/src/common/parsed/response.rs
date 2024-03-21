@@ -37,7 +37,7 @@ impl<P> ParsedResponse<P> {
     }
 
     #[inline]
-    pub fn writeback_cookie(&mut self) {
+    pub fn writeback(&mut self) {
         self.serialize_cookies_into_header();
     }
 

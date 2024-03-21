@@ -1,4 +1,7 @@
-use std::cell::UnsafeCell;
+use std::{
+    cell::UnsafeCell,
+    ops::{Deref, DerefMut},
+};
 
 use bytes::{Bytes, BytesMut};
 use cookie::{Cookie, CookieJar};
@@ -22,6 +25,20 @@ pub struct ParsedRequest<P> {
     url_params: UnsafeCell<Parse<QueryMap>>,
     body_form_params: Parse<QueryMap>,
     body_cache: Option<Bytes>,
+}
+
+impl<P> Deref for ParsedRequest<P> {
+    type Target = Request<P>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<P> DerefMut for ParsedRequest<P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 impl<P> From<Request<P>> for ParsedRequest<P> {
@@ -87,6 +104,15 @@ impl<P: crate::common::body::FixedBody> ParsedRequest<P> {
             return new_req;
         }
         self.inner
+    }
+
+    #[inline]
+    pub fn writeback(&mut self) {
+        self.serialize_cookies_into_header();
+        if let Some(body) = &self.body_cache {
+            let body = P::fixed_body(Some(body.clone()));
+            *self.inner.body_mut() = body;
+        }
     }
 }
 
