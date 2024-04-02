@@ -1,4 +1,5 @@
 //! For lazy parse request/response and modify headers.
+pub mod multipart;
 pub mod request;
 pub mod response;
 

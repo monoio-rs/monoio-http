@@ -16,6 +16,8 @@ use monoio_compat::box_future::MaybeArmedBoxFuture;
 use smallvec::SmallVec;
 
 use super::error::{EncodeDecodeError, HttpError};
+#[cfg(feature = "parsed")]
+use super::parsed::multipart::ParsedMultiPartForm;
 use crate::{
     common::{request::Request, response::Response},
     h1::payload::Payload,
@@ -211,6 +213,8 @@ pub enum HttpBody {
     Ready(Option<Bytes>),
     H1(Payload),
     H2(RecvStream),
+    #[cfg(feature = "parsed")]
+    Multipart(ParsedMultiPartForm),
 }
 
 impl HttpBody {
@@ -306,6 +310,8 @@ impl Body for HttpBody {
             Self::Ready(b) => b.take().map(Result::Ok),
             Self::H1(ref mut p) => p.next_data().await,
             Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
+            #[cfg(feature = "parsed")]
+            Self::Multipart(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
         }
     }
 
@@ -315,6 +321,8 @@ impl Body for HttpBody {
             Self::Ready(None) => StreamHint::None,
             Self::H1(ref p) => p.stream_hint(),
             Self::H2(ref p) => p.stream_hint(),
+            #[cfg(feature = "parsed")]
+            Self::Multipart(ref p) => p.stream_hint(),
         }
     }
 }

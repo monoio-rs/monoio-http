@@ -39,7 +39,6 @@ smallvec = "1"
 
 cookie = { version = "0.18.0", features = ["percent-encode"], optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
-multipart = { version = "0.18", optional = true }
 mime = { version = "0.3", optional = true }
 multer = { version = "3.0.0", optional = true }
 
@@ -67,7 +66,7 @@ stream = []
 # depends on this feature.
 unstable = []
 
-parsed = ["dep:cookie", "dep:serde_urlencoded", "dep:multipart", "dep:mime", "dep:multer"]
+parsed = ["dep:cookie", "dep:serde_urlencoded", "dep:mime", "dep:multer"]
 
 [lib]
 doctest = false

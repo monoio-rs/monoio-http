@@ -24,10 +24,14 @@ pub enum ParseError {
     InvalidContentType,
     #[error("SerDe error {0}")]
     Serde(#[from] serde_urlencoded::de::Error),
+    #[error("Previous Error")]
+    Previous,
     #[error("http error {0}")]
     Http(#[from] HttpError),
-    #[error("Previous returned error")]
-    Previous,
+    #[error("Multer Error")]
+    MulterError(#[from] multer::Error),
+    #[error("IO error {0}")]
+    IOError(#[from] std::io::Error),
 }
 
 #[derive(ThisError, Debug)]
@@ -42,6 +46,9 @@ pub enum HttpError {
     H2Error(#[from] crate::h2::Error),
     #[error("IO error {0}")]
     IOError(#[from] std::io::Error),
+    // #[cfg(feature = "parsed")]
+    // #[error("Parse error {0}")]
+    // ParseError(#[from] ParseError),
 }
 
 impl From<Infallible> for HttpError {
