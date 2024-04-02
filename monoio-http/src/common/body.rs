@@ -311,7 +311,7 @@ impl Body for HttpBody {
             Self::H1(ref mut p) => p.next_data().await,
             Self::H2(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
             #[cfg(feature = "parsed")]
-            Self::Multipart(ref mut p) => p.next_data().await,
+            Self::Multipart(ref mut p) => p.next_data().await.map(|r| r.map_err(HttpError::from)),
         }
     }
 

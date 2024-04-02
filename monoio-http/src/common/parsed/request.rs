@@ -382,13 +382,13 @@ where
         &mut self,
         user_constraints: Option<multer::Constraints>,
         max_file_size: Option<u64>,
-    ) -> Result<&mut ParsedMultiPartForm, HttpError> {
+    ) -> Result<&mut ParsedMultiPartForm, ParseError> {
         if self.multipart_params.is_parsed() {
             return Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() });
         }
 
         if self.multipart_params.is_failed() {
-            return Err(ExtractError::Previous.into());
+            return Err(ParseError::Previous.into());
         }
 
         println!("{:?}", self.inner.headers().get(CONTENT_TYPE));
@@ -412,7 +412,7 @@ where
             }
             _ => {
                 self.multipart_params = Parse::Failed;
-                return Err(ExtractError::InvalidContentType.into());
+                return Err(ParseError::InvalidContentType.into());
             }
         };
 
@@ -436,7 +436,7 @@ where
     pub async fn parse_get_multipart_field_param(
         &mut self,
         name: &str,
-    ) -> Result<Option<Vec<FieldHeader>>, HttpError> {
+    ) -> Result<Option<Vec<FieldHeader>>, ParseError> {
         self.parse_multipart_params(None, None).await?;
         Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }.get_field_value(name))
     }
@@ -451,7 +451,7 @@ where
     pub async fn parse_get_multipart_file_param(
         &mut self,
         name: &str,
-    ) -> Result<Option<Vec<FileHeader>>, HttpError> {
+    ) -> Result<Option<Vec<FileHeader>>, ParseError> {
         self.parse_multipart_params(None, None).await?;
         Ok(unsafe { self.multipart_params.as_mut().unwrap_unchecked() }.get_file(name))
     }

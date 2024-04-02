@@ -10,7 +10,7 @@ use monoio::fs::File;
 
 use crate::common::{
     body::{Body, HttpBody, StreamHint},
-    error::HttpError,
+    error::{ParseError, HttpError},
 };
 
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
@@ -237,7 +237,7 @@ impl ParsedMultiPartForm {
         mut multer_multipart: multer::Multipart<'_>,
         boundary: String,
         max_file_size: u64,
-    ) -> Result<Self, HttpError> {
+    ) -> Result<Self, ParseError> {
         let mut form = ParsedMultiPartForm::new(boundary, max_file_size);
         while let Some(mut field) = multer_multipart.next_field().await? {
             let name = field.name().unwrap_or_default().to_string();
