@@ -4,12 +4,7 @@ use cookie::{Cookie, CookieJar};
 use http::header::COOKIE;
 pub use http::response::{Builder as ResponseBuilder, Parts as ResponseHead};
 
-use crate::common::{
-    error::{ExtractError, HttpError},
-    parsed::Parse,
-    response::Response,
-    IntoParts,
-};
+use crate::common::{error::ParseError, parsed::Parse, response::Response, IntoParts};
 
 pub struct ParsedResponse<P> {
     inner: Response<P>,
@@ -42,7 +37,7 @@ impl<P> ParsedResponse<P> {
     }
 
     #[inline]
-    pub fn writeback_cookie(&mut self) {
+    pub fn writeback(&mut self) {
         self.serialize_cookies_into_header();
     }
 
@@ -89,20 +84,20 @@ impl<P> IntoParts for ParsedResponse<P> {
 
 impl<P> ParsedResponse<P> {
     /// Parse the cookies into a CookieJar.
-    pub fn parse_cookies_params(&self) -> Result<(), HttpError> {
+    pub fn parse_cookies_params(&self) -> Result<(), ParseError> {
         let cookie_jar = unsafe { &mut *self.cookie_jar.get() };
         if cookie_jar.is_parsed() {
             return Ok(());
         }
         if cookie_jar.is_failed() {
-            return Err(ExtractError::Previous.into());
+            return Err(ParseError::Previous);
         }
 
         let mut jar = CookieJar::new();
         if let Some(cookie_header) = self.inner.headers().get(COOKIE) {
             let cookie_str = cookie_header.to_str().map_err(|_| {
                 *cookie_jar = Parse::Failed;
-                ExtractError::InvalidHeaderValue
+                ParseError::InvalidHeaderValue
             })?;
             // TODO: maybe we should use split_parse_encoded?
             for cookie in Cookie::split_parse(cookie_str) {
@@ -110,7 +105,7 @@ impl<P> ParsedResponse<P> {
                     Ok(c) => c,
                     Err(_) => {
                         *cookie_jar = Parse::Failed;
-                        return Err(ExtractError::InvalidHeaderValue.into());
+                        return Err(ParseError::InvalidHeaderValue);
                     }
                 };
                 jar.add_original(cookie.into_owned());
@@ -124,7 +119,7 @@ impl<P> ParsedResponse<P> {
     /// Set a cookie into the CookieJar.
     /// Note: if the cookies are not parsed before, this method will parse the cookies first.
     #[inline]
-    pub fn set_cookie_param(&self, cookie: Cookie<'static>) -> Result<(), HttpError> {
+    pub fn set_cookie_param(&self, cookie: Cookie<'static>) -> Result<(), ParseError> {
         self.parse_cookies_params()?;
         unsafe {
             let parsed = &mut *self.cookie_jar.get();
@@ -136,7 +131,7 @@ impl<P> ParsedResponse<P> {
     /// Get a cookie from the CookieJar.
     /// Note: if the cookies are not parsed before, this method will parse the cookies first.
     #[inline]
-    pub fn get_cookie_param(&self, name: &str) -> Result<Option<&Cookie<'static>>, HttpError> {
+    pub fn get_cookie_param(&self, name: &str) -> Result<Option<&Cookie<'static>>, ParseError> {
         self.parse_cookies_params()?;
         unsafe {
             let parsed = &*self.cookie_jar.get();

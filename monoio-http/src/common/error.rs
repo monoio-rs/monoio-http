@@ -11,8 +11,9 @@ use crate::h1::{
     payload::PayloadError,
 };
 
+#[cfg(feature = "parsed")]
 #[derive(ThisError, Debug)]
-pub enum ExtractError {
+pub enum ParseError {
     #[error("Uninitialized cookie jar")]
     UninitializedCookieJar,
     #[cfg(feature = "parsed")]
@@ -22,8 +23,14 @@ pub enum ExtractError {
     InvalidHeaderValue,
     #[error("Invalid content type")]
     InvalidContentType,
+    #[error("SerDe error {0}")]
+    Serde(#[from] serde_urlencoded::de::Error),
+    #[error("http error {0}")]
+    Http(#[from] HttpError),
     #[error("Previous returned error")]
     Previous,
+    #[error("Multer Error")]
+    MulterError(#[from] multer::Error),
 }
 
 #[derive(ThisError, Debug)]
@@ -38,14 +45,6 @@ pub enum HttpError {
     H2Error(#[from] crate::h2::Error),
     #[error("IO error {0}")]
     IOError(#[from] std::io::Error),
-    #[error("Cookie error {0}")]
-    CookieError(#[from] ExtractError),
-    #[cfg(feature = "parsed")]
-    #[error("SerDe error {0}")]
-    SerDeError(#[from] serde_urlencoded::de::Error),
-    #[cfg(feature = "parsed")]
-    #[error("Multer Error")]
-    MulterError(#[from] multer::Error),
 }
 
 impl From<Infallible> for HttpError {
