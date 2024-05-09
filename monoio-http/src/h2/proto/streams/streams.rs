@@ -948,7 +948,6 @@ where
         me.counts.max_recv_streams()
     }
 
-    #[cfg(feature = "unstable")]
     pub fn num_active_streams(&self) -> usize {
         let me = unsafe { &mut *self.inner.get() };
         me.store.num_active_streams()
@@ -964,10 +963,19 @@ where
         me.counts.has_streams() || me.refs > 1
     }
 
-    #[cfg(feature = "unstable")]
     pub fn num_wired_streams(&self) -> usize {
         let me = unsafe { &mut *self.inner.get() };
         me.store.num_wired_streams()
+    }
+
+    pub fn has_conn_error(&self) -> bool {
+        let me = unsafe { &mut *self.inner.get() };
+        me.actions.conn_error.is_some()
+    }
+
+    pub fn conn_error(&self) -> Option<crate::h2::Error> {
+        let me = unsafe { &mut *self.inner.get() };
+        me.actions.conn_error.clone().map(Into::into)
     }
 }
 

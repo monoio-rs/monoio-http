@@ -147,7 +147,7 @@ use bytes::{Buf, Bytes};
 use http::{uri, HeaderMap, Method, Request, Response, Version};
 use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
 use tracing::Instrument;
-
+use crate::common::error::HttpError;
 use crate::h2::{
     codec::{Codec, SendError, UserError},
     ext::Protocol,
@@ -536,6 +536,14 @@ where
     pub fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.inner.is_extended_connect_protocol_enabled()
     }
+
+    pub fn has_conn_error(&self) -> bool {
+        self.inner.has_conn_error()
+    }
+
+    pub fn conn_error(&self) -> Option<HttpError> {
+        self.inner.conn_error().map(HttpError::from)
+    }
 }
 
 impl<B> fmt::Debug for SendRequest<B>
@@ -559,7 +567,6 @@ where
     }
 }
 
-#[cfg(feature = "unstable")]
 impl<B> SendRequest<B>
 where
     B: Buf,

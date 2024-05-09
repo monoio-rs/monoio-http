@@ -294,6 +294,8 @@ impl Encoder<&[u8]> for FixedBodyEncoder {
     }
 }
 
+
+#[allow(dead_code)]
 struct ChunkedBodyEncoder;
 
 impl Encoder<Option<&[u8]>> for ChunkedBodyEncoder {
