@@ -147,13 +147,16 @@ use bytes::{Buf, Bytes};
 use http::{uri, HeaderMap, Method, Request, Response, Version};
 use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
 use tracing::Instrument;
-use crate::common::error::HttpError;
-use crate::h2::{
-    codec::{Codec, SendError, UserError},
-    ext::Protocol,
-    frame::{Headers, Pseudo, Reason, Settings, StreamId},
-    proto::{self, Error},
-    FlowControl, PingPong, RecvStream, SendStream,
+
+use crate::{
+    common::error::HttpError,
+    h2::{
+        codec::{Codec, SendError, UserError},
+        ext::Protocol,
+        frame::{Headers, Pseudo, Reason, Settings, StreamId},
+        proto::{self, Error},
+        FlowControl, PingPong, RecvStream, SendStream,
+    },
 };
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.

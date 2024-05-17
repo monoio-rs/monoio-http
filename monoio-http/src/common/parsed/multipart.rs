@@ -10,7 +10,7 @@ use monoio::fs::File;
 
 use crate::common::{
     body::{Body, HttpBody, StreamHint},
-    error::{ParseError, HttpError},
+    error::{HttpError, ParseError},
 };
 
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
