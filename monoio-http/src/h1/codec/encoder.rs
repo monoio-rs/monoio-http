@@ -46,9 +46,13 @@ struct HeadEncoder(pub Length);
 
 impl HeadEncoder {
     #[inline]
-    fn write_length(&self, dst: &mut BytesMut) {
+    fn write_length(&self, dst: &mut BytesMut, force: bool) {
         match self.0 {
-            Length::None => (),
+            Length::None => {
+                if force {
+                    dst.extend_from_slice(b"content-length: 0\r\n");
+                }
+            }
             Length::ContentLength(l) => {
                 dst.extend_from_slice(http::header::CONTENT_LENGTH.as_ref());
                 dst.extend_from_slice(b": ");
@@ -158,7 +162,9 @@ impl Encoder<(&http::Method, &http::Uri, http::Version, &http::HeaderMap)> for H
 
         // put content length or transfor encoding
         // note: should remote these headers if cannot guarantee these 2 header not exist.
-        self.write_length(dst);
+        let force = headers.contains_key(http::header::CONTENT_LENGTH)
+            || headers.contains_key(http::header::TRANSFER_ENCODING);
+        self.write_length(dst, force);
         // put headers
         Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
@@ -274,7 +280,8 @@ impl
 
         // put content length or transfor encoding
         // note: should remote these headers if cannot guarantee these 2 header not exist.
-        self.write_length(dst);
+        self.write_length(dst, true);
+
         // put headers
         Self::write_headers(headers, dst);
         dst.extend_from_slice(b"\r\n");
@@ -293,7 +300,6 @@ impl Encoder<&[u8]> for FixedBodyEncoder {
         Ok(())
     }
 }
-
 
 #[allow(dead_code)]
 struct ChunkedBodyEncoder;
