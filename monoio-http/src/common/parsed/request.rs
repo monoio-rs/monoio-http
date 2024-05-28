@@ -388,7 +388,7 @@ where
         }
 
         if self.multipart_params.is_failed() {
-            return Err(ParseError::Previous.into());
+            return Err(ParseError::Previous);
         }
 
         println!("{:?}", self.inner.headers().get(CONTENT_TYPE));
@@ -412,7 +412,7 @@ where
             }
             _ => {
                 self.multipart_params = Parse::Failed;
-                return Err(ParseError::InvalidContentType.into());
+                return Err(ParseError::InvalidContentType);
             }
         };
 

@@ -1,7 +1,6 @@
 use std::{
     task::{Context, Waker},
     time::Instant,
-    usize,
 };
 
 use super::*;
