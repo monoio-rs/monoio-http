@@ -2,7 +2,7 @@ use std::{
     cmp,
     collections::VecDeque,
     hash::{Hash, Hasher},
-    mem, usize,
+    mem,
 };
 
 use fnv::FnvHasher;

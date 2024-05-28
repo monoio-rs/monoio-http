@@ -1,21 +1,16 @@
 use std::{
     cell::UnsafeCell,
     convert::Infallible,
-    io::{Cursor, Read},
     task::{ready, Poll},
 };
 
 use bytes::{Bytes, BytesMut};
-use flate2::{
-    read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder},
-    Compression,
-};
 use futures_core::Future;
 use monoio::buf::IoBuf;
 use monoio_compat::box_future::MaybeArmedBoxFuture;
 use smallvec::SmallVec;
 
-use super::error::{EncodeDecodeError, HttpError};
+use super::error::HttpError;
 #[cfg(feature = "parsed")]
 use super::parsed::multipart::ParsedMultiPartForm;
 use crate::{
@@ -23,8 +18,6 @@ use crate::{
     h1::payload::Payload,
     h2::RecvStream,
 };
-
-const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "br", "deflate"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamHint {
@@ -132,6 +125,19 @@ where
     }
 }
 
+#[cfg(feature = "encoding")]
+use std::io::Read;
+
+#[cfg(feature = "encoding")]
+use flate2::{
+    read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder},
+    Compression,
+};
+
+#[cfg(feature = "encoding")]
+use super::error::EncodeDecodeError;
+
+#[cfg(feature = "encoding")]
 impl<T: BodyExt> BodyEncodeExt for T {
     type EncodeDecodeError = EncodeDecodeError<T::Error>;
     async fn decode_content(self, encoding: String) -> Result<Bytes, Self::EncodeDecodeError> {
@@ -166,45 +172,37 @@ impl<T: BodyExt> BodyEncodeExt for T {
         self,
         accept_encoding: String,
     ) -> Result<Bytes, Self::EncodeDecodeError> {
+        const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "br", "deflate"];
         let buf = self.bytes().await.map_err(EncodeDecodeError::Http)?;
-        let accepted_encodings: Vec<String> = accept_encoding
+
+        let selected_encoding = accept_encoding
             .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
+            .map(|s| s.trim())
+            .find(|encoding| SUPPORTED_ENCODINGS.contains(encoding))
+            .unwrap_or("identity");
 
-        // Find the first supported encoding from the accepted encodings
-        let selected_encoding = accepted_encodings
-            .iter()
-            .find(|&encoding| SUPPORTED_ENCODINGS.contains(&encoding.as_str()))
-            .cloned()
-            .unwrap_or_else(|| "identity".to_string());
-
-        let encoded_data = match selected_encoding.as_str() {
+        let mut compressed_data = Vec::new();
+        match selected_encoding {
             "gzip" => {
                 let mut encoder = GzEncoder::new(buf.as_ref(), Compression::best());
-                let mut compressed_data = Vec::new();
                 encoder.read_to_end(&mut compressed_data)?;
-                compressed_data
             }
             "deflate" => {
                 let mut encoder = ZlibEncoder::new(buf.as_ref(), Compression::best());
-                let mut compressed_data = Vec::new();
                 encoder.read_to_end(&mut compressed_data)?;
-                compressed_data
             }
             "br" => {
-                let mut encoder = brotli::CompressorReader::new(Cursor::new(buf), 4096, 11, 22);
-                let mut compressed_data = Vec::new();
+                let mut encoder =
+                    brotli::CompressorReader::new(std::io::Cursor::new(buf), 4096, 11, 22);
                 encoder.read_to_end(&mut compressed_data)?;
-                compressed_data
             }
             _ => {
                 // Unsupported or no encoding, return original data
-                buf.to_vec()
+                return Ok(buf);
             }
-        };
+        }
 
-        Ok(bytes::Bytes::from(encoded_data))
+        Ok(bytes::Bytes::from(compressed_data))
     }
 }
 

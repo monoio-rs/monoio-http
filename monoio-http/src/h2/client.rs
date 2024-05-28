@@ -140,7 +140,6 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
-    usize,
 };
 
 use bytes::{Buf, Bytes};
@@ -987,7 +986,7 @@ impl Builder {
     ///
     /// This function panics if `max` is larger than `u32::MAX`.
     pub fn max_send_buffer_size(&mut self, max: usize) -> &mut Self {
-        assert!(max <= std::u32::MAX as usize);
+        assert!(max <= u32::MAX as usize);
         self.max_send_buffer_size = max;
         self
     }
