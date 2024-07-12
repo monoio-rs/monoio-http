@@ -290,6 +290,7 @@ where
                 Ok(data.freeze())
             }
         }?;
+        *self.inner.body_mut() = P::fixed_body(Some(data.clone()));
 
         let body_ref: &mut Bytes = self.body_cache.insert(data);
         let form = serde_urlencoded::from_bytes::<QueryMap>(body_ref).map_err(|e| {
