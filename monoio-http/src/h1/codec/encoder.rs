@@ -73,7 +73,7 @@ impl HeadEncoder {
         {
             // fast path
             for (name, value) in headers.iter() {
-                dst.extend_from_slice(name.as_ref());
+                dst.extend_from_slice(name.as_raw_str().as_ref());
                 dst.extend_from_slice(b": ");
                 dst.extend_from_slice(value.as_ref());
                 dst.extend_from_slice(b"\r\n");
@@ -82,7 +82,8 @@ impl HeadEncoder {
             for (name, value) in headers.iter().filter(|(name, _)| {
                 *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
             }) {
-                dst.extend_from_slice(name.as_ref());
+                // encode raw str
+                dst.extend_from_slice(name.as_raw_str().as_ref());
                 dst.extend_from_slice(b": ");
                 dst.extend_from_slice(value.as_ref());
                 dst.extend_from_slice(b"\r\n");
