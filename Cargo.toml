@@ -13,3 +13,6 @@ bytes = "1"
 http = "1.0"
 local-sync = "0.1"
 thiserror = "1"
+
+[patch.crates-io]
+http = { git = "https://github.com/monoio-rs/http" }
