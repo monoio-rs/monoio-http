@@ -157,17 +157,23 @@ impl<P> ParsedRequest<P> {
             *url_params = Parse::Parsed(Default::default());
             return Ok(());
         };
-        let parsed = serde_urlencoded::from_str(query).map_err(|e| {
+
+        let map: Vec<(String, String)> = serde_urlencoded::from_str(query).map_err(|e| {
             *url_params = Parse::Failed;
             e
         })?;
-        *url_params = Parse::Parsed(parsed);
+
+        let mut qmap = QueryMap::new();
+        for (key, value) in map {
+            qmap.entry(key).or_insert(Vec::new()).push(value);
+        }
+        *url_params = Parse::Parsed(qmap);
         Ok(())
     }
 
     /// Try parse if not parsed before, then get the value of the URL parameter.
     #[inline]
-    pub fn get_url_param(&self, name: &str) -> Result<Option<String>, ParseError> {
+    pub fn get_url_param(&self, name: &str) -> Result<Option<Vec<&str>>, ParseError> {
         self.parse_url_params()?;
         unsafe {
             let parsed = &*self.url_params.get();
@@ -175,7 +181,7 @@ impl<P> ParsedRequest<P> {
                 .as_ref()
                 .unwrap_unchecked()
                 .get(name)
-                .map(|s| s.to_string()))
+                .map(|v| v.iter().map(|s| s.as_str()).collect()))
         }
     }
 }
@@ -293,10 +299,15 @@ where
         *self.inner.body_mut() = P::fixed_body(Some(data.clone()));
 
         let body_ref: &mut Bytes = self.body_cache.insert(data);
-        let form = serde_urlencoded::from_bytes::<QueryMap>(body_ref).map_err(|e| {
+        let map: Vec<(String, String)> = serde_urlencoded::from_bytes(body_ref).map_err(|e| {
             self.body_form_params = Parse::Failed;
             e
         })?;
+
+        let mut form = QueryMap::new();
+        for (key, map) in map {
+            form.entry(key).or_insert(Vec::new()).push(map);
+        }
         self.body_form_params = Parse::Parsed(form);
 
         Ok(unsafe { self.body_form_params.as_mut().unwrap_unchecked() })
@@ -307,18 +318,20 @@ where
     pub async fn parse_get_body_url_encoded_param(
         &mut self,
         name: &str,
-    ) -> Result<Option<&str>, ParseError> {
+    ) -> Result<Option<Vec<&str>>, ParseError> {
         self.parse_body_url_encoded_params().await?;
         Ok(unsafe { self.body_form_params.as_ref().unwrap_unchecked() }
             .get(name)
-            .map(|s| s.as_str()))
+            .map(|v| v.iter().map(|s| s.as_str()).collect()))
     }
 
     /// Get the value of the body URL parameter.
     /// Note: if the body URL parameters are not parsed before, this method will return None.
-    pub fn get_body_url_encoded_param(&self, name: &str) -> Option<&str> {
+    pub fn get_body_url_encoded_param(&self, name: &str) -> Option<Vec<&str>> {
         match self.body_form_params {
-            Parse::Parsed(ref map) => map.get(name).map(|s| s.as_str()),
+            Parse::Parsed(ref map) => map
+                .get(name)
+                .map(|v| v.iter().map(|s| s.as_str()).collect()),
             _ => None,
         }
     }
@@ -481,7 +494,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Read, path::PathBuf};
+    use std::{io::Read, path::PathBuf, vec};
 
     use http::header::HeaderValue;
 
@@ -603,7 +616,7 @@ mod tests {
         let uri = http::Uri::builder()
             .scheme("http")
             .authority("example.com")
-            .path_and_query("/path?user_id=123&email=some_email")
+            .path_and_query("/path?user_id=123&email=some_email&email=another_email")
             .build()
             .unwrap();
 
@@ -617,27 +630,15 @@ mod tests {
         let request = create_request_with_url_params();
         let parsed = ParsedRequest::new(request);
 
-        assert_eq!(
-            parsed.get_url_param("user_id").unwrap(),
-            Some("123".to_string())
-        );
+        assert_eq!(parsed.get_url_param("user_id").unwrap(), Some(vec!["123"]));
         assert_eq!(
             parsed.get_url_param("email").unwrap(),
-            Some("some_email".to_string())
-        );
-
-        assert_eq!(
-            parsed.get_url_param("user_id").unwrap(),
-            Some("123".to_string())
-        );
-        assert_eq!(
-            parsed.get_url_param("email").unwrap(),
-            Some("some_email".to_string())
+            Some(vec!["some_email", "another_email"])
         );
     }
 
     fn create_request_with_url_encoded_body() -> Request<HttpBody> {
-        let form_data = vec![("key1", "value1"), ("key2", "value2")];
+        let form_data = vec![("key1", "value1"), ("key2", "value2"), ("key1", "value3")];
 
         let body = serde_urlencoded::to_string(form_data).expect("Failed to serialize form data");
         let mut request = Request::new(HttpBody::fixed_body(Some(Bytes::from(body))));
@@ -659,10 +660,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(query_map.get("key1").map(|s| s.as_str()), Some("value1"));
-        assert_eq!(query_map.get("key2").map(|s| s.as_str()), Some("value2"));
+        assert_eq!(
+            query_map.get("key1"),
+            Some(&vec!["value1".to_string(), "value3".to_string()])
+        );
+        assert_eq!(query_map.get("key2"), Some(&vec!["value2".to_string()]));
 
-        let form_data = vec![("key1", "value1"), ("key2", "value2")];
+        let form_data = vec![("key1", "value1"), ("key2", "value2"), ("key1", "value3")];
         let orig_body =
             serde_urlencoded::to_string(form_data).expect("Failed to serialize form data");
 
@@ -681,10 +685,10 @@ mod tests {
             .unwrap();
 
         let res1 = parsed_request.get_body_url_encoded_param("key1");
-        assert_eq!(res1, Some("value1"));
+        assert_eq!(res1, Some(vec!["value1", "value3"]));
         assert_eq!(
             parsed_request.get_body_url_encoded_param("key2"),
-            Some("value2")
+            Some(vec!["value2"])
         );
     }
 
