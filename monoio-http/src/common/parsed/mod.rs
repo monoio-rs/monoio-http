@@ -4,8 +4,7 @@ pub mod request;
 pub mod response;
 
 use std::collections::HashMap;
-
-pub type QueryMap = HashMap<String, String>;
+pub type QueryMap = HashMap<String, Vec<String>>;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Parse<T> {
