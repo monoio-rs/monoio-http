@@ -160,9 +160,22 @@ impl Decoder for RequestHeadDecoder {
         let uri = match req.path {
             Some("/") => Uri::default(),
             Some(path) => {
-                let uri_start = path.as_bytes().as_ptr() as usize - base_ptr;
-                let uri_end = uri_start + path.len();
-                Uri::from_maybe_shared(header_data.slice(uri_start..uri_end))?
+                // Split path and query
+                let (path, query) = match path.find('?') {
+                    Some(pos) => (&path[..pos], &path[pos..]),
+                    None => (path, ""),
+                };
+
+                // Normalize only the path part
+                let normalized_path = normalize_path(path);
+                // Combine normalized path with query
+                let full_path = if query.is_empty() {
+                    normalized_path
+                } else {
+                    format!("{}{}", normalized_path, query)
+                };
+
+                Uri::from_maybe_shared(Bytes::from(full_path))?
             }
             _ => Uri::default(),
         };
@@ -174,6 +187,43 @@ impl Decoder for RequestHeadDecoder {
         request_head.headers = headers;
 
         Ok(Decoded::Some(request_head))
+    }
+}
+
+fn normalize_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+
+    // Add leading slash if needed
+    if !path.starts_with('/') {
+        result.push('/');
+    }
+
+    // Check if path ends with slash
+    let has_trailing_slash = path.ends_with('/');
+
+    // Split path into segments and process them
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut normalized_segments = Vec::with_capacity(segments.len());
+
+    for segment in segments {
+        match segment {
+            "." => continue,
+            ".." => {
+                normalized_segments.pop();
+            }
+            _ => normalized_segments.push(segment),
+        }
+    }
+
+    // Join segments with single slash
+    if normalized_segments.is_empty() {
+        "/".to_string()
+    } else {
+        let mut normalized = format!("/{}", normalized_segments.join("/"));
+        if has_trailing_slash {
+            normalized.push('/');
+        }
+        normalized
     }
 }
 
@@ -959,5 +1009,56 @@ mod tests {
             }
             (result, buf)
         }
+    }
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(normalize_path("///a/b/c"), "/a/b/c");
+        assert_eq!(normalize_path("/a/./b/c"), "/a/b/c");
+        assert_eq!(normalize_path("/a/b/../c"), "/a/c");
+        assert_eq!(normalize_path("/a/b/../../c"), "/c");
+        assert_eq!(normalize_path("a/b/c"), "/a/b/c");
+        assert_eq!(normalize_path("/"), "/");
+        assert_eq!(normalize_path(""), "/");
+        assert_eq!(normalize_path("///"), "/");
+        assert_eq!(normalize_path("/a/../b/../c"), "/c");
+        assert_eq!(normalize_path("/a/../../b"), "/b");
+        assert_eq!(normalize_path("/a/"), "/a/");
+        assert_eq!(normalize_path("/a/b/"), "/a/b/");
+        assert_eq!(normalize_path("a/b/"), "/a/b/");
+    }
+
+    #[test]
+    fn test_uri_with_query() {
+        let path = "/a/b/c?key=value";
+        let (path, query) = match path.find('?') {
+            Some(pos) => (&path[..pos], &path[pos..]),
+            None => (path, ""),
+        };
+        assert_eq!(path, "/a/b/c");
+        assert_eq!(query, "?key=value");
+
+        let normalized_path = normalize_path(path);
+        assert_eq!(normalized_path, "/a/b/c");
+
+        let full_path = format!("{}{}", normalized_path, query);
+        assert_eq!(full_path, "/a/b/c?key=value");
+    }
+
+    #[test]
+    fn test_uri_with_special_query() {
+        let path = "//log/view?filename=shells&base=../../../../../../../../../../../../../../etc";
+        let (path, query) = match path.find('?') {
+            Some(pos) => (&path[..pos], &path[pos..]),
+            None => (path, ""),
+        };
+        assert_eq!(path, "//log/view");
+        assert_eq!(query, "?filename=shells&base=../../../../../../../../../../../../../../etc");
+
+        let normalized_path = normalize_path(path);
+        assert_eq!(normalized_path, "/log/view");
+
+        let full_path = format!("{}{}", normalized_path, query);
+        assert_eq!(full_path, "/log/view?filename=shells&base=../../../../../../../../../../../../../../etc");
     }
 }
