@@ -10,6 +10,7 @@ use http::{
 };
 use monoio::io::{stream::Stream, AsyncReadRent, OwnedReadHalf};
 use monoio_codec::{Decoded, Decoder, FramedRead};
+use smallvec::SmallVec;
 use thiserror::Error as ThisError;
 
 use crate::{
@@ -202,10 +203,9 @@ fn normalize_path(path: &str) -> String {
     let has_trailing_slash = path.ends_with('/');
 
     // Split path into segments and process them
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let mut normalized_segments = Vec::with_capacity(segments.len());
-
-    for segment in segments {
+    let mut normalized_segments: SmallVec<[&str; 8]> = SmallVec::new();
+    
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
         match segment {
             "." => continue,
             ".." => {
