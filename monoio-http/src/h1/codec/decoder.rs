@@ -192,20 +192,23 @@ impl Decoder for RequestHeadDecoder {
 }
 
 fn normalize_path(path: &str) -> String {
-    let mut result = String::with_capacity(path.len());
+    // First decode URL-encoded characters
+    let decoded_path = decode_url_path(path);
+    
+    let mut result = String::with_capacity(decoded_path.len());
 
     // Add leading slash if needed
-    if !path.starts_with('/') {
+    if !decoded_path.starts_with('/') {
         result.push('/');
     }
 
     // Check if path ends with slash
-    let has_trailing_slash = path.ends_with('/');
+    let has_trailing_slash = decoded_path.ends_with('/');
 
     // Split path into segments and process them
     let mut normalized_segments: SmallVec<[&str; 8]> = SmallVec::new();
     
-    for segment in path.split('/').filter(|s| !s.is_empty()) {
+    for segment in decoded_path.split('/').filter(|s| !s.is_empty()) {
         match segment {
             "." => continue,
             ".." => {
@@ -225,6 +228,64 @@ fn normalize_path(path: &str) -> String {
         }
         normalized
     }
+}
+
+// Convert hex character to its numeric value
+fn hex_char_to_value(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+// URL decode function similar to Go's decodeArgAppendNoPlus
+// This doesn't substitute '+' with ' ' (unlike standard URL decoding)
+fn decode_url_path(src: &str) -> String {
+    let src_bytes = src.as_bytes();
+    
+    // Fast path: if no '%' found, return original string
+    if !src_bytes.contains(&b'%') {
+        return src.to_string();
+    }
+    
+    // Slow path: decode URL-encoded characters
+    let mut result = Vec::with_capacity(src_bytes.len());
+    let mut i = 0;
+    
+    while i < src_bytes.len() {
+        let c = src_bytes[i];
+        if c == b'%' {
+            if i + 2 >= src_bytes.len() {
+                // Not enough characters for a complete hex sequence
+                result.extend_from_slice(&src_bytes[i..]);
+                break;
+            }
+            
+            let high = hex_char_to_value(src_bytes[i + 1]);
+            let low = hex_char_to_value(src_bytes[i + 2]);
+            
+            match (high, low) {
+                (Some(h), Some(l)) => {
+                    // Valid hex sequence, decode it
+                    let decoded = (h << 4) | l;
+                    result.push(decoded);
+                    i += 2; // Skip the two hex characters
+                }
+                _ => {
+                    // Invalid hex characters, keep the '%'
+                    result.push(b'%');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+        i += 1;
+    }
+    
+    // Convert back to string, handling invalid UTF-8 gracefully
+    String::from_utf8_lossy(&result).into_owned()
 }
 
 // TODO: less code copy
@@ -1026,6 +1087,24 @@ mod tests {
         assert_eq!(normalize_path("/a/"), "/a/");
         assert_eq!(normalize_path("/a/b/"), "/a/b/");
         assert_eq!(normalize_path("a/b/"), "/a/b/");
+        
+        // Test URL decoding functionality
+        assert_eq!(normalize_path("/actuator/prometheus;%2f..%2f..%2f"), "/");
+        assert_eq!(normalize_path("/test%2f..%2f..%2fpasswd"), "/passwd");
+        assert_eq!(normalize_path("/%2e%2e%2f%2e%2e%2fetc%2fpasswd"), "/etc/passwd");
+        assert_eq!(normalize_path("/app%2f%2e%2e%2f%2e%2e%2fetc"), "/etc");
+        
+        // Test mixed URL encoding and path traversal
+        assert_eq!(normalize_path("/var/log/%2e%2e%2f%2e%2e%2fetc/passwd"), "/etc/passwd");
+        assert_eq!(normalize_path("/uploads%2f..%2f..%2fconfig"), "/config");
+        
+        // Test invalid URL encoding (should be kept as-is)
+        assert_eq!(normalize_path("/test%zz"), "/test%zz");
+        assert_eq!(normalize_path("/test%2"), "/test%2");
+        
+        // Test normal paths without encoding
+        assert_eq!(normalize_path("/normal/path"), "/normal/path");
+        assert_eq!(normalize_path("/a%20b"), "/a b"); // space encoding
     }
 
     #[test]
@@ -1060,5 +1139,37 @@ mod tests {
 
         let full_path = format!("{}{}", normalized_path, query);
         assert_eq!(full_path, "/log/view?filename=shells&base=../../../../../../../../../../../../../../etc");
+    }
+
+    #[test]
+    fn test_decode_url_path() {
+        // Test basic URL decoding
+        assert_eq!(decode_url_path("hello%20world"), "hello world");
+        assert_eq!(decode_url_path("/path%2fwith%2fslashes"), "/path/with/slashes");
+        assert_eq!(decode_url_path("%2e%2e%2f%2e%2e"), "../..");
+        
+        // Test case insensitive hex - simpler cases first
+        assert_eq!(decode_url_path("%2F"), "/");
+        assert_eq!(decode_url_path("%2f"), "/");
+        assert_eq!(decode_url_path("%2E"), ".");
+        assert_eq!(decode_url_path("%2e"), ".");
+        
+        // Test no encoding (fast path)
+        assert_eq!(decode_url_path("normal/path"), "normal/path");
+        
+        // Test invalid encoding
+        assert_eq!(decode_url_path("test%zz"), "test%zz");
+        assert_eq!(decode_url_path("test%2"), "test%2");
+        assert_eq!(decode_url_path("test%"), "test%");
+        
+        // Test multiple encodings
+        assert_eq!(decode_url_path("%2e%2e%2f%2e%2e%2f%2e%2e"), "../../..");
+        
+        // Test partial invalid sequences
+        assert_eq!(decode_url_path("%2e%xx%2f"), ".%xx/");
+        
+        // Test common path traversal patterns
+        assert_eq!(decode_url_path("%2f..%2f..%2f"), "/../../");
+        assert_eq!(decode_url_path("actuator%2fprometheus"), "actuator/prometheus");
     }
 }
