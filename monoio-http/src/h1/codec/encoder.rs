@@ -80,7 +80,9 @@ impl HeadEncoder {
             }
         } else {
             for (name, value) in headers.iter().filter(|(name, _)| {
-                *name != http::header::CONTENT_LENGTH && *name != http::header::TRANSFER_ENCODING
+                let lowercase_name = name.as_raw_str().to_lowercase();
+                lowercase_name != http::header::CONTENT_LENGTH.as_str()
+                    && lowercase_name != http::header::TRANSFER_ENCODING.as_str()
             }) {
                 // encode raw str
                 dst.extend_from_slice(name.as_raw_str().as_ref());

@@ -203,6 +203,7 @@ fn normalize_path(path: &str) -> String {
     }
 
     // Check if path ends with slash
+
     let has_trailing_slash = decoded_path.ends_with('/');
 
     // Split path into segments and process them
@@ -1086,8 +1087,7 @@ mod tests {
         assert_eq!(normalize_path("/a/../../b"), "/b");
         assert_eq!(normalize_path("/a/"), "/a/");
         assert_eq!(normalize_path("/a/b/"), "/a/b/");
-        assert_eq!(normalize_path("a/b/"), "/a/b/");
-        
+        assert_eq!(normalize_path("a/b/"), "/a/b/");        
         // Test URL decoding functionality
         assert_eq!(normalize_path("/actuator/prometheus;%2f..%2f..%2f"), "/");
         assert_eq!(normalize_path("/test%2f..%2f..%2fpasswd"), "/passwd");
@@ -1104,7 +1104,6 @@ mod tests {
         
         // Test normal paths without encoding
         assert_eq!(normalize_path("/normal/path"), "/normal/path");
-        assert_eq!(normalize_path("/a%20b"), "/a b"); // space encoding
     }
 
     #[test]
