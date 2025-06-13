@@ -3,7 +3,7 @@ members = ["monoio-http", "monoio-http-client"]
 resolver = "2"
 
 [workspace.dependencies]
-monoio = "0.2.3"
+monoio = "0.2.4"
 monoio-compat = "0.2.0"
 service-async = "0.2.0"
 monoio-rustls = "0.3.0"

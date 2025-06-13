@@ -364,7 +364,7 @@ mod tests {
 
     use super::*;
 
-    #[monoio::test_all(enable_timer = true)]
+    #[monoio::test(enable_timer = true)]
     async fn stream_payload() {
         let (mut payload, mut payload_sender) = stream_payload_pair();
         monoio::spawn(async move {
@@ -388,7 +388,7 @@ mod tests {
         assert!(payload.next().await.is_none());
     }
 
-    #[monoio::test_all(enable_timer = true)]
+    #[monoio::test(enable_timer = true)]
     async fn fixed_payload() {
         let (mut payload, payload_sender) = fixed_payload_pair::<_, Infallible>();
         monoio::spawn(async move {

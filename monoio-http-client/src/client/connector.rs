@@ -15,10 +15,7 @@ use monoio::{
 use monoio_http::h1::codec::ClientCodec;
 
 use super::{
-    connection::HttpConnection,
-    key::HttpVersion,
-    pool::{ConnectionPool, PooledConnection},
-    ClientGlobalConfig, ConnectionConfig, Proto,
+    connection::HttpConnection, key::HttpVersion, pool::{ConnectionPool, PooledConnection}, ClientGlobalConfig, ConnectionConfig, Proto
 };
 
 #[cfg(not(feature = "native-tls"))]
@@ -45,10 +42,9 @@ where
     type Error = io::Error;
 
     async fn connect(&self, key: T) -> Result<Self::Connection, Self::Error> {
-        TcpStream::connect(key).await.map(|io| {
+        TcpStream::connect(key).await.inspect(|io| {
             // we will ignore the set nodelay error
             let _ = io.set_nodelay(true);
-            io
         })
     }
 }
@@ -83,8 +79,39 @@ impl<C: Debug> std::fmt::Debug for TlsConnector<C> {
     }
 }
 
-impl<C: Default> Default for TlsConnector<C> {
-    #[cfg(not(feature = "native-tls"))]
+impl <C:Default> TlsConnector<C>{
+    pub fn new(c_config: &ConnectionConfig) -> Self{
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                ta.subject,
+                ta.spki,
+                ta.name_constraints,
+            )
+        }));
+
+        let mut cfg = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        if c_config.proto == Proto::Http2{
+            cfg.alpn_protocols = vec![b"h2".to_vec()];
+        }
+        Self {
+            inner_connector: Default::default(),
+            tls_connector: cfg.into(),
+        }
+    }
+    #[cfg(feature = "native-tls")]
+    fn new() -> Self {
+        Self {
+            inner_connector: Default::default(),
+            tls_connector: native_tls::TlsConnector::builder().build().unwrap().into(),
+        }
+    }
+} 
+
+impl <C:Default> Default for TlsConnector<C>{
     fn default() -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
@@ -105,7 +132,6 @@ impl<C: Default> Default for TlsConnector<C> {
             tls_connector: cfg.into(),
         }
     }
-
     #[cfg(feature = "native-tls")]
     fn default() -> Self {
         Self {
@@ -222,13 +248,12 @@ impl<TC, K, IO: AsyncWriteRent> std::fmt::Debug for PooledConnector<TC, K, IO> {
 }
 
 impl<TC, K: 'static, IO: AsyncWriteRent + 'static> PooledConnector<TC, K, IO>
-where
-    TC: Default,
+where TC : From<ConnectionConfig>
 {
     pub fn new_default(global_config: ClientGlobalConfig, c_config: ConnectionConfig) -> Self {
         Self {
             global_config,
-            transport_connector: Default::default(),
+            transport_connector: TC::from(c_config.clone()),
             http_connector: HttpConnector::new(c_config),
             pool: ConnectionPool::default(),
         }

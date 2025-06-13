@@ -13,7 +13,7 @@ use monoio::{
 use service_async::Param;
 use smol_str::SmolStr;
 
-use super::connector::{TcpConnector, TlsConnector, TlsStream, UnixConnector};
+use super::{connector::{TcpConnector, TlsConnector, TlsStream, UnixConnector}, ConnectionConfig};
 use crate::Connector;
 
 // TODO: make its PathBuf and SmolStr to ref
@@ -27,23 +27,23 @@ pub enum UnifiedTransportAddr {
 
 struct TcpTlsAddr<'a>(&'a SmolStr, u16, &'a super::key::ServerName);
 struct UnixTlsAddr<'a>(&'a PathBuf, &'a super::key::ServerName);
-impl<'a> ToSocketAddrs for TcpTlsAddr<'a> {
+impl ToSocketAddrs for TcpTlsAddr<'_> {
     type Iter = <(&'static str, u16) as ToSocketAddrs>::Iter;
     fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
         (self.0.as_str(), self.1).to_socket_addrs()
     }
 }
-impl<'a> service_async::Param<super::key::ServerName> for TcpTlsAddr<'a> {
+impl service_async::Param<super::key::ServerName> for TcpTlsAddr<'_> {
     fn param(&self) -> super::key::ServerName {
         self.2.clone()
     }
 }
-impl<'a> AsRef<Path> for UnixTlsAddr<'a> {
+impl AsRef<Path> for UnixTlsAddr<'_> {
     fn as_ref(&self) -> &Path {
         self.0
     }
 }
-impl<'a> service_async::Param<super::key::ServerName> for UnixTlsAddr<'a> {
+impl service_async::Param<super::key::ServerName> for UnixTlsAddr<'_> {
     fn param(&self) -> super::key::ServerName {
         self.1.clone()
     }
@@ -56,6 +56,18 @@ pub struct UnifiedTransportConnector {
     tcp_tls: TlsConnector<TcpConnector>,
     unix_tls: TlsConnector<UnixConnector>,
 }
+
+impl From<ConnectionConfig> for UnifiedTransportConnector{
+    fn from(config: ConnectionConfig) -> Self {
+        UnifiedTransportConnector{
+            tcp_tls: TlsConnector::<TcpConnector>::new(&config),
+            unix_tls: TlsConnector::<UnixConnector>::new(&config),
+            raw_tcp: Default::default(),
+            raw_unix: Default::default()
+        }
+    }
+}
+
 
 pub enum UnifiedTransportConnection {
     Tcp(TcpStream),

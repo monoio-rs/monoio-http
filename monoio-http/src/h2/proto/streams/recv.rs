@@ -1041,7 +1041,10 @@ impl Recv {
     ) -> Poll<Option<Result<Bytes, proto::Error>>> {
         // TODO: Return error when the stream is reset
         match stream.pending_recv.pop_front(&mut self.buffer) {
-            Some(Event::Data(payload)) => Poll::Ready(Some(Ok(payload))),
+            Some(Event::Data(payload)) => match payload.is_empty() {
+                true => self.schedule_recv(cx, stream),
+                false => Poll::Ready(Some(Ok(payload))),
+            },
             Some(event) => {
                 // Frame is trailer
                 stream.pending_recv.push_front(&mut self.buffer, event);

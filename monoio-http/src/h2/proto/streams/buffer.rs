@@ -86,7 +86,7 @@ impl Deque {
                     idxs.head = slot.next.take().unwrap();
                     self.indices = Some(idxs);
                 }
-
+                
                 Some(slot.value)
             }
             None => None,

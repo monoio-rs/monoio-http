@@ -826,7 +826,7 @@ mod tests {
         }};
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_request_without_body() {
         let io = mock! { Ok(b"GET /test HTTP/1.1\r\n\r\n".to_vec()) };
         let mut decoder = RequestDecoder::new(io);
@@ -835,7 +835,7 @@ mod tests {
         assert!(matches!(req.body(), Payload::None));
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_response_without_body() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\n\r\n".to_vec()) };
         let mut decoder = ResponseDecoder::new(io);
@@ -844,7 +844,7 @@ mod tests {
         assert!(matches!(req.body(), Payload::None));
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_fixed_body_request() {
         let io = mock! { Ok(b"POST /test HTTP/1.1\r\nContent-Length: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
         let mut decoder = RequestDecoder::new(io);
@@ -861,7 +861,7 @@ mod tests {
         assert!(decoder.next().await.is_none());
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_fixed_body_response() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\ncontent-lenGth: 4\r\ntest-key: test-val\r\n\r\nbody".to_vec()) };
         let mut decoder = ResponseDecoder::new(io);
@@ -878,7 +878,7 @@ mod tests {
         assert!(decoder.next().await.is_none());
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_chunked_request() {
         let io = mock! { Ok(b"PUT /test HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n\
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };
@@ -904,7 +904,7 @@ mod tests {
         handler.await
     }
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn decode_chunked_response() {
         let io = mock! { Ok(b"HTTP/1.1 200 OK\r\nTransfer-encoDing: chunked\r\n\r\n\
         4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n".to_vec()) };

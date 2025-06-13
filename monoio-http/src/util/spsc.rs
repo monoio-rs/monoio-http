@@ -108,7 +108,7 @@ pub struct Recv<'a, T> {
     receiver: &'a mut SPSCReceiver<T>,
 }
 
-impl<'a, T> Future for Recv<'a, T> {
+impl<T> Future for Recv<'_, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -191,7 +191,7 @@ pub struct Send<'a, T> {
     item: Option<T>,
 }
 
-impl<'a, T: Unpin> Future for Send<'a, T> {
+impl<T: Unpin> Future for Send<'_, T> {
     type Output = Result<(), T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -215,7 +215,7 @@ pub struct Closed<'a, T> {
     sender: &'a mut SPSCSender<T>,
 }
 
-impl<'a, T> Future for Closed<'a, T> {
+impl<T> Future for Closed<'_, T> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -228,7 +228,7 @@ impl<'a, T> Future for Closed<'a, T> {
 mod tests {
     use super::*;
 
-    #[monoio::test_all]
+    #[monoio::test]
     async fn send_recv() {
         let (mut tx, mut rx) = spsc_pair::<u8>();
         tx.send(24).await.expect("receiver should not be closed");
