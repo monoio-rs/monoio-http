@@ -31,7 +31,7 @@ use crate::{
     },
 };
 
-const MAX_HEADERS: usize = 96;
+const MAX_HEADERS: usize = 256;
 
 #[derive(ThisError, Debug)]
 pub enum InvalidRequestError {
