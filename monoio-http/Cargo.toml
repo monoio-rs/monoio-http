@@ -14,7 +14,6 @@ version = "0.3.12"
 [dependencies]
 monoio = { workspace = true }
 monoio-compat = { workspace = true }
-monoio-rustls = { workspace = true }
 monoio-native-tls = { workspace = true, optional = true }
 service-async = { workspace = true }
 monoio-codec = { workspace = true }
